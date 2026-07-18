@@ -53,18 +53,22 @@ async function persistActivities() {
   cfg = await window.huddle.storeSet({ activities: cfg.activities });
 }
 
-/** Chips for signal activities. Two independent times: how long the offer
- * still stands (countdown) and, if set, the expected call length —
- * "55min AI evals (~5min call)". */
-function activityChips(activities) {
+/** Chips for signal activities: "eval project (~5min call)". The offer
+ * countdown lives in the row above ("Available for N min" / "N min left"),
+ * so a chip only shows its own countdown when it expires meaningfully
+ * earlier than the overall signal. */
+function activityChips(activities, overallEntry) {
+  const overall = remainingMin(overallEntry);
   const wrap = document.createElement("div");
   wrap.className = "chips";
   for (const a of activities) {
     const c = document.createElement("span");
     c.className = "chip";
-    c.textContent = `${remainingMin(a)}min ${a.label}${
-      a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""
-    }`;
+    const left = remainingMin(a);
+    c.textContent =
+      a.label +
+      (a.durationMinutes ? ` (~${a.durationMinutes}min call)` : "") +
+      (overall - left > 1 ? ` · ${left}min left` : "");
     wrap.append(c);
   }
   return wrap;
@@ -267,7 +271,7 @@ function render() {
   $("self-on").hidden = !on;
   if (on) {
     $("self-countdown").textContent = `Available for ${remainingMin(me)} min`;
-    $("self-acts-display").replaceChildren(...activityChips(me.activities ?? []).children);
+    $("self-acts-display").replaceChildren(...activityChips(me.activities ?? [], me).children);
     const note = me.note ?? "";
     $("self-note-display").textContent = note;
     $("self-note-display").hidden = !note;
@@ -294,7 +298,7 @@ function render() {
         meta.className = "meta";
         meta.textContent = `${remainingMin(m)} min left${m.note ? ` · ${m.note}` : ""}`;
         info.append(meta);
-        if (m.activities?.length) info.append(activityChips(m.activities));
+        if (m.activities?.length) info.append(activityChips(m.activities, m));
       }
 
       const actions = document.createElement("div");
