@@ -24,9 +24,11 @@
       <label>Server
         <input id="ob-server" type="url" placeholder="https://ai.nicohillbrand.com" />
       </label>
-      <label>Invite code
-        <input id="ob-code" type="text" autocomplete="off" />
+      <label>Friend code
+        <input id="ob-code" type="text" autocomplete="off" placeholder="e.g. kqm3-x7p2" />
       </label>
+      <p class="muted small">Ask the friend inviting you for their code (settings → My friend code).
+      Joining automatically makes you two friends.</p>
       <label>Your name
         <input id="ob-name" type="text" maxlength="40" autocomplete="off" />
       </label>
@@ -103,6 +105,25 @@
         </div>
         <p id="shortcut-hint" class="muted small">Click, then press the new combination. Esc cancels.</p>
         <p id="shortcut-error" class="error small" hidden></p>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">My friend code <span class="muted small">(click to copy)</span></div>
+        <div class="row">
+          <button id="friend-code" class="mono" title="Copy my friend code">…</button>
+          <button id="friend-code-rotate" title="Old code stops working; existing friends keep you">Rotate</button>
+        </div>
+        <p class="muted small">Share it so a friend can add you — or join the server as your friend.
+        Also pairs your own extra devices (enter it with your name).</p>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Friends</div>
+        <div class="row">
+          <input id="friend-add-input" type="text" placeholder="paste a friend's code…" autocomplete="off" />
+          <button id="friend-add-btn">Add</button>
+        </div>
+        <div id="friends-editor"></div>
       </div>
 
       <div class="setting">

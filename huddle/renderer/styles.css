@@ -105,6 +105,7 @@ button.mono { font-family: ui-monospace, Consolas, monospace; }
 .center { text-align: center; margin-top: 24px; }
 .row { display: flex; gap: 8px; margin-top: 8px; }
 .row button { flex: 1; }
+.row input { flex: 2; min-width: 0; }
 
 /* ---- self card ---- */
 #self-card {

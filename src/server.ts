@@ -9,7 +9,7 @@ import { PUBLIC_INTERESTS } from "../content/interests.js";
 import { createSession, getSession, authorize } from "./negotiation/store.js";
 import { processTurn, summarize } from "./negotiation/negotiate.js";
 import {
-  pair,
+  pairWithCode,
   memberByToken,
   setSignal,
   clearSignal,
@@ -18,6 +18,9 @@ import {
   pingMember,
   requestCall,
   acceptCall,
+  addFriendByCode,
+  unfriend,
+  rotateFriendCode,
   type Member,
   type Activity,
 } from "./presence/store.js";
@@ -168,23 +171,70 @@ function presenceMember(req: Request, res: Response): Member | undefined {
   return member;
 }
 
+// Pair with a friend's personal code (joins AND befriends them in one step),
+// with your own code (adds this device to your identity), or with a
+// bootstrap code from HUDDLE_INVITE_CODES (first member only, no friends).
 app.post("/api/presence/pair", (req, res) => {
-  const { inviteCode, displayName } = req.body ?? {};
-  if (typeof inviteCode !== "string" || typeof displayName !== "string" || !displayName.trim()) {
-    res.status(400).json({ error: "bad_request", message: "Body must be { inviteCode, displayName }." });
+  const body = req.body ?? {};
+  const code = typeof body.code === "string" ? body.code : body.inviteCode; // legacy field
+  const { displayName } = body;
+  if (typeof code !== "string" || typeof displayName !== "string" || !displayName.trim()) {
+    res.status(400).json({ error: "bad_request", message: "Body must be { code, displayName }." });
     return;
   }
-  if (!config.huddleInviteCodes.length || !config.huddleInviteCodes.includes(inviteCode.trim())) {
-    res.status(403).json({ error: "forbidden", message: "Invalid invite code." });
+  const result = pairWithCode(code, displayName, config.huddleInviteCodes);
+  if (!result.ok) {
+    res.status(403).json({ error: "forbidden", message: "Invalid code — ask your friend for theirs (settings → My friend code)." });
     return;
   }
-  const { member, token } = pair(displayName);
   res.status(201).json({
-    deviceToken: token,
-    memberId: member.id,
-    displayName: member.displayName,
+    deviceToken: result.token,
+    memberId: result.member.id,
+    displayName: result.member.displayName,
+    friendCode: result.member.friendCode,
     callLink: config.huddleCallLink,
   });
+});
+
+// Your own identity: friend code to share, and rotation when it leaks.
+app.get("/api/presence/me", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  res.json({ memberId: member.id, displayName: member.displayName, friendCode: member.friendCode });
+});
+
+app.post("/api/presence/me/rotate-code", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  res.json({ friendCode: rotateFriendCode(member) });
+});
+
+// Friend graph: add by code (mutual immediately — sharing the code is the
+// consent), remove unilaterally (drops both directions).
+app.post("/api/presence/friends", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  const { code } = req.body ?? {};
+  if (typeof code !== "string" || !code.trim()) {
+    res.status(400).json({ error: "bad_request", message: "Body must be { code: string }." });
+    return;
+  }
+  const result = addFriendByCode(member, code);
+  if (!result.ok) {
+    res.status(result.error === "self_code" ? 400 : 404).json({ error: result.error });
+    return;
+  }
+  res.status(201).json({ friend: result.friend });
+});
+
+app.delete("/api/presence/friends/:id", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  if (!unfriend(member, req.params.id)) {
+    res.status(404).json({ error: "not_found", message: "Not one of your friends." });
+    return;
+  }
+  res.sendStatus(204);
 });
 
 /** Sanitize a client-sent activity list: caps, trims, and a strict
@@ -290,7 +340,7 @@ app.delete("/api/presence/signal", (req, res) => {
 app.get("/api/presence/roster", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
-  res.json({ members: roster(member.id), callLink: config.huddleCallLink });
+  res.json({ members: roster(member), callLink: config.huddleCallLink });
 });
 
 app.get("/api/presence/stream", (req, res) => {
@@ -304,7 +354,7 @@ app.get("/api/presence/stream", (req, res) => {
   const send = (event: string, data: unknown) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  send("roster", { members: roster(member.id), callLink: config.huddleCallLink });
+  send("roster", { members: roster(member), callLink: config.huddleCallLink });
   const unsubscribe = subscribe(send, member.id);
   const ping = setInterval(() => send("ping", {}), 20_000);
   req.on("close", () => {

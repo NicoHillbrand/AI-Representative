@@ -42,6 +42,12 @@ export interface Member {
   displayName: string;
   /** Device tokens — one person may pair several devices under one name. */
   tokens: Set<string>;
+  /** Personal invite code: sharing it lets a friend add (or join and add)
+   * you. Rotatable; doubles as the pairing secret for your own extra
+   * devices. */
+  friendCode: string;
+  /** Mutual by construction: a is in b.friends iff b is in a.friends. */
+  friends: Set<string>;
   signal?: Signal;
 }
 
@@ -61,7 +67,7 @@ export interface RosterEntry {
 const members = new Map<string, Member>();
 const byToken = new Map<string, Member>();
 
-// --- persistence (members only, never signals) --------------------------------
+// --- persistence (members + friend graph, never signals) ----------------------
 const dataDir = join(paths.root, "data");
 const dataFile = join(dataDir, "presence-members.json");
 
@@ -69,10 +75,23 @@ function load(): void {
   if (!existsSync(dataFile)) return;
   try {
     const raw = JSON.parse(readFileSync(dataFile, "utf8")) as {
-      members?: { id: string; displayName: string; tokens: string[] }[];
+      members?: {
+        id: string;
+        displayName: string;
+        tokens: string[];
+        friendCode?: string;
+        friends?: string[];
+      }[];
     };
     for (const m of raw.members ?? []) {
-      const member: Member = { id: m.id, displayName: m.displayName, tokens: new Set(m.tokens) };
+      const member: Member = {
+        id: m.id,
+        displayName: m.displayName,
+        tokens: new Set(m.tokens),
+        // Pre-friend-graph files lack these: mint a code, start friendless.
+        friendCode: m.friendCode || generateCode(),
+        friends: new Set(m.friends ?? []),
+      };
       members.set(member.id, member);
       for (const t of member.tokens) byToken.set(t, member);
     }
@@ -88,40 +107,115 @@ function save(): void {
       id: m.id,
       displayName: m.displayName,
       tokens: [...m.tokens],
+      friendCode: m.friendCode,
+      friends: [...m.friends],
     })),
   };
   writeFileSync(dataFile, JSON.stringify(raw, null, 2));
+}
+
+// Readable, unambiguous code like "kqm3-x7p2" (~40 bits — plenty for a
+// rate-limited-by-obscurity friend gate).
+function generateCode(): string {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  const chars = [...randomBytes(8)].map((b) => alphabet[b % alphabet.length]);
+  return `${chars.slice(0, 4).join("")}-${chars.slice(4).join("")}`;
 }
 
 load();
 
 // --- pairing & auth ------------------------------------------------------------
 /**
- * Redeem an invite code. Pairing again with an already-known display name
- * (case-insensitive) attaches a new device token to the existing member, so
- * one person on two machines shows up once in the roster.
+ * Pair a device using a code:
+ *  - a member's friend code + THEIR display name → attach another device to
+ *    that member (the code doubles as your own multi-device secret);
+ *  - a member's friend code + any other name → create a new member and make
+ *    the two friends (joining and adding the inviter in one step);
+ *  - a bootstrap code (HUDDLE_INVITE_CODES env) → create a friendless member,
+ *    or reattach by name — this is how the very first person gets in.
  */
-export function pair(displayName: string): { member: Member; token: string } {
+export function pairWithCode(
+  code: string,
+  displayName: string,
+  bootstrapCodes: string[],
+): { ok: true; member: Member; token: string } | { ok: false; error: "invalid_code" } {
   const name = displayName.trim().slice(0, 40);
-  const existing = [...members.values()].find(
-    (m) => m.displayName.toLowerCase() === name.toLowerCase(),
-  );
+  const c = code.trim();
   const token = randomBytes(24).toString("base64url");
-  let member: Member;
-  if (existing) {
-    member = existing;
+
+  const finish = (member: Member) => {
     member.tokens.add(token);
-  } else {
-    member = { id: `mem_${randomUUID()}`, displayName: name, tokens: new Set([token]) };
+    byToken.set(token, member);
     members.set(member.id, member);
+    save();
+    return { ok: true as const, member, token };
+  };
+  const createMember = (): Member => ({
+    id: `mem_${randomUUID()}`,
+    displayName: name,
+    tokens: new Set<string>(),
+    friendCode: generateCode(),
+    friends: new Set<string>(),
+  });
+  const byName = () =>
+    [...members.values()].find((m) => m.displayName.toLowerCase() === name.toLowerCase());
+
+  const codeOwner = c && [...members.values()].find((m) => m.friendCode === c);
+  if (codeOwner) {
+    if (codeOwner.displayName.toLowerCase() === name.toLowerCase()) return finish(codeOwner);
+    const created = finish(createMember());
+    befriend(created.member, codeOwner);
+    return created;
   }
-  byToken.set(token, member);
-  save();
-  return { member, token };
+  if (c && bootstrapCodes.includes(c)) return finish(byName() ?? createMember());
+  return { ok: false, error: "invalid_code" };
 }
 
 export function memberByToken(token: string | undefined): Member | undefined {
   return token ? byToken.get(token) : undefined;
+}
+
+// --- friend graph ---------------------------------------------------------------
+function befriend(a: Member, b: Member): void {
+  if (a.id === b.id || a.friends.has(b.id)) return;
+  a.friends.add(b.id);
+  b.friends.add(a.id);
+  save();
+  // Each side's overlay learns about its new friend immediately.
+  sendTo(a.id, "update", { member: entryFor(b, a.id) });
+  sendTo(b.id, "update", { member: entryFor(a, b.id) });
+}
+
+export function addFriendByCode(
+  me: Member,
+  code: string,
+):
+  | { ok: true; friend: { memberId: string; displayName: string } }
+  | { ok: false; error: string } {
+  const c = code.trim();
+  const owner = c && [...members.values()].find((m) => m.friendCode === c);
+  if (!owner) return { ok: false, error: "invalid_code" };
+  if (owner.id === me.id) return { ok: false, error: "self_code" };
+  befriend(me, owner);
+  return { ok: true, friend: { memberId: owner.id, displayName: owner.displayName } };
+}
+
+/** Unilateral and mutual: removing a friend removes you from their side too. */
+export function unfriend(me: Member, friendId: string): boolean {
+  const other = members.get(friendId);
+  if (!other || !me.friends.has(friendId)) return false;
+  me.friends.delete(friendId);
+  other.friends.delete(me.id);
+  save();
+  sendTo(me.id, "friend-removed", { memberId: other.id });
+  sendTo(other.id, "friend-removed", { memberId: me.id });
+  return true;
+}
+
+export function rotateFriendCode(me: Member): string {
+  me.friendCode = generateCode();
+  save();
+  return me.friendCode;
 }
 
 // --- signals ---------------------------------------------------------------------
@@ -188,9 +282,11 @@ export function clearSignal(member: Member): void {
   broadcastMember(member);
 }
 
-export function roster(viewerId: string): RosterEntry[] {
-  return [...members.values()]
-    .map((m) => entryFor(m, viewerId))
+/** Only yourself and your friends — nobody else's existence is disclosed. */
+export function roster(viewer: Member): RosterEntry[] {
+  return [viewer, ...[...viewer.friends].map((id) => members.get(id))]
+    .filter((m): m is Member => !!m)
+    .map((m) => entryFor(m, viewer.id))
     .sort((a, b) => {
       if (a.available !== b.available) return a.available ? -1 : 1;
       return a.displayName.localeCompare(b.displayName);
@@ -209,8 +305,25 @@ export function subscribe(send: Send, viewerId: string): () => void {
   return () => subscribers.delete(sub);
 }
 
+function sendTo(viewerId: string, event: string, data: unknown): boolean {
+  let delivered = false;
+  for (const sub of subscribers) {
+    if (sub.viewerId !== viewerId) continue;
+    try {
+      sub.send(event, data);
+      delivered = true;
+    } catch {
+      subscribers.delete(sub);
+    }
+  }
+  return delivered;
+}
+
+/** Signal changes go to the member's own devices and their friends' — never
+ * to strangers on the same server. */
 function broadcastMember(m: Member): void {
   for (const sub of subscribers) {
+    if (sub.viewerId !== m.id && !m.friends.has(sub.viewerId)) continue;
     try {
       sub.send("update", { member: entryFor(m, sub.viewerId) });
     } catch {
@@ -231,7 +344,8 @@ function sendDirect(
   data: Record<string, unknown>,
 ): { ok: true; delivered: boolean } | { ok: false; error: string } {
   const target = members.get(toMemberId);
-  if (!target) return { ok: false, error: "unknown_member" };
+  // Non-friends get the same error as nonexistent members — no probing.
+  if (!target || !from.friends.has(target.id)) return { ok: false, error: "unknown_member" };
   if (target.id === from.id) return { ok: false, error: "self_target" };
   const key = `${event}:${from.id}>${target.id}`;
   const now = Date.now();

@@ -24,8 +24,15 @@ npm start                      # or: $env:HUDDLE_DEBUG='1'; npm start  (window o
 ```
 
 First launch shows onboarding: server URL (`https://ai.nicohillbrand.com` or
-`http://localhost:8080` for dev), invite code, your name. Pairing again with the
-same name on another machine attaches it to the same identity.
+`http://localhost:8080` for dev), a **friend code**, and your name. The code
+of the friend inviting you both creates your account and makes you two
+friends; the very first member uses a bootstrap code from the server's
+`HUDDLE_INVITE_CODES`. Entering **your own** code with your name pairs an
+additional device onto your identity.
+
+Friendship is pairwise and mutual: your roster shows only the people you've
+added (and who thereby added you) — not everyone on the server. Friends of
+your friends see nothing of you.
 
 ## Use
 
@@ -37,7 +44,8 @@ same name on another machine attaches it to the same identity.
 | Ping a friend | 👋 on their row — toast + notification on their overlay (throttled; tells you if they're offline) |
 | Call a friend | `call` on an available friend's row sends a request; **they must accept** — then the room opens for both, with a **Copy link** button on the toast (e.g. to reshare over Messenger). The room is your own link if you set one (settings → My call link, e.g. a Google Meet), otherwise a fresh room from the server's `HUDDLE_CALL_LINK` template (`{room}` replaced per call; default Jitsi). Requests expire after 2 min and are single-use. |
 | Quick-set from tray | right-click tray → "Available for 60 min" |
-| Settings (⚙ in header) | call type presets, shortcut recorder, **my call link** (your Meet/Zoom/... room, sent with your call requests), quiet pings (no sound), friend-available notifications, start at login, sign out |
+| Add / remove friends | settings → **My friend code** (click to copy, rotatable — rotation doesn't affect existing friends) to be added; paste a friend's code under **Friends** to add them. Removing a friend (×) is mutual — you disappear from each other's rosters. |
+| Settings (⚙ in header) | friend code + friends list, call type presets, shortcut recorder, **my call link** (your Meet/Zoom/... room, sent with your call requests), quiet pings (no sound), friend-available notifications, start at login, sign out |
 
 True Google Meet room creation would require Google OAuth per user (Calendar
 API) — the `{room}` template keeps that swappable later without app changes.

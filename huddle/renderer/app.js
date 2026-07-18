@@ -206,7 +206,7 @@ function visPicker(a) {
     if (!others.length) {
       const none = document.createElement("span");
       none.className = "muted";
-      none.textContent = "no friends in the group yet";
+      none.textContent = "no friends yet";
       box.append(none);
     }
     for (const f of others) {
@@ -394,6 +394,12 @@ async function connectStream() {
         } else if (event === "update") {
           applyUpdate(payload.member);
           render();
+          if (!$("settings").hidden) renderFriendsEditor(); // a new friend may have appeared
+        } else if (event === "friend-removed") {
+          // Mutual removal — drop them from our roster immediately.
+          members.delete(payload.memberId);
+          render();
+          if (!$("settings").hidden) renderFriendsEditor();
         } else if (event === "ping-from") {
           toast(`👋 ${payload.from.displayName} pinged you`, 20_000);
           window.huddle.notify(
@@ -559,7 +565,7 @@ async function join() {
     const res = await fetch(`${serverUrl}/api/presence/pair`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inviteCode, displayName }),
+      body: JSON.stringify({ code: inviteCode, displayName }),
     });
     const body = await res.json();
     if (!res.ok) throw new Error(body.message ?? `HTTP ${res.status}`);
@@ -581,8 +587,66 @@ async function join() {
 // --- settings ---------------------------------------------------------------------------
 let recordingShortcut = false;
 
+async function refreshFriendCode() {
+  $("friend-code").textContent = "…";
+  const res = await api("/api/presence/me").catch(() => null);
+  $("friend-code").textContent = res?.ok ? (await res.json()).friendCode : "offline";
+}
+
+/** Settings: your friends, each removable (removal is mutual). */
+function renderFriendsEditor() {
+  $("friends-editor").replaceChildren(
+    ...friends().map((f) => {
+      const row = document.createElement("div");
+      row.className = "act-row";
+      const main = document.createElement("div");
+      main.className = "act-main";
+      const label = document.createElement("label");
+      label.append(document.createTextNode(f.displayName));
+      const del = document.createElement("button");
+      del.className = "act-del";
+      del.textContent = "×";
+      del.title = `Remove ${f.displayName} (they lose you too)`;
+      del.addEventListener("click", async () => {
+        const res = await api(`/api/presence/friends/${f.memberId}`, { method: "DELETE" });
+        if (!res.ok) return toast("Couldn't remove them.");
+        members.delete(f.memberId);
+        render();
+        renderFriendsEditor();
+      });
+      main.append(label, del);
+      row.append(main);
+      return row;
+    }),
+  );
+}
+
+async function addFriend() {
+  const input = $("friend-add-input");
+  const code = input.value.trim();
+  if (!code) return;
+  const res = await api("/api/presence/friends", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return toast(
+      body.error === "self_code"
+        ? "That's your own code."
+        : "No one has that code — it may have been rotated.",
+    );
+  }
+  const { friend } = await res.json();
+  input.value = "";
+  toast(`You and ${friend.displayName} are now friends.`, 6_000);
+  // Their roster entry arrives via the stream; the editor refreshes with it.
+}
+
 async function openSettings() {
   renderActivityEditor();
+  renderFriendsEditor();
+  refreshFriendCode();
   $("shortcut-btn").textContent = await window.huddle.getShortcut();
   $("set-call-link").value = cfg.myCallLink || "";
   $("set-quiet-pings").checked = cfg.quietPings === true;
@@ -680,6 +744,20 @@ $("open-manage").addEventListener("click", openManage);
 $("manage-back").addEventListener("click", () => showView("main"));
 $("signout-btn").addEventListener("click", () => signOut());
 $("shortcut-btn").addEventListener("click", startShortcutRecording);
+$("friend-code").addEventListener("click", () => {
+  const code = $("friend-code").textContent;
+  if (!code || code === "…" || code === "offline") return;
+  window.huddle.copyText(code);
+  toast("Friend code copied.", 4_000);
+});
+$("friend-code-rotate").addEventListener("click", async () => {
+  const res = await api("/api/presence/me/rotate-code", { method: "POST" });
+  if (!res.ok) return toast("Couldn't rotate your code.");
+  $("friend-code").textContent = (await res.json()).friendCode;
+  toast("New code — the old one no longer works.", 6_000);
+});
+$("friend-add-btn").addEventListener("click", addFriend);
+$("friend-add-input").addEventListener("keydown", (e) => e.key === "Enter" && addFriend());
 $("set-call-link").addEventListener("change", async (e) => {
   const v = e.target.value.trim();
   if (v && !/^https:\/\/\S+$/.test(v)) {
