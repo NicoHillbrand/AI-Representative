@@ -552,9 +552,33 @@ async function signOut(message) {
   showOnboardingError(message);
 }
 
+// --- window sizing ---------------------------------------------------------------------
+// The window hugs its content: header + whichever view is active. A
+// MutationObserver keeps it honest through roster changes, editors, chips.
+const VIEWS = ["onboarding", "main", "settings", "interests", "manage"];
+let fitScheduled = false;
+function fitWindow() {
+  if (fitScheduled) return;
+  fitScheduled = true;
+  requestAnimationFrame(() => {
+    fitScheduled = false;
+    const active = VIEWS.map($).find((el) => !el.hidden);
+    if (!active) return;
+    // +2 for the panel border; toasts are absolute and don't count.
+    window.huddle.resizeWindow($("drag-bar").offsetHeight + active.scrollHeight + 2);
+  });
+}
+new MutationObserver(fitWindow).observe($("panel"), {
+  subtree: true,
+  childList: true,
+  attributes: true,
+  attributeFilter: ["hidden", "style"],
+});
+
 // --- views ---------------------------------------------------------------------------
 function showView(name) {
-  for (const v of ["onboarding", "main", "settings", "interests", "manage"]) $(v).hidden = v !== name;
+  for (const v of VIEWS) $(v).hidden = v !== name;
+  fitWindow();
 }
 
 function openInterests() {
@@ -784,6 +808,8 @@ $("self-on-btn").addEventListener("click", () => setAvailable(chosenMinutes()));
 $("self-extend-btn").addEventListener("click", () => setAvailable(chosenMinutes()));
 $("self-clear-btn").addEventListener("click", clearSignal);
 
+$("min-btn").addEventListener("click", () => window.huddle.hideWindow());
+$("close-btn").addEventListener("click", () => window.huddle.quitApp());
 $("settings-btn").addEventListener("click", () => {
   if (cfg.deviceToken) openSettings();
 });

@@ -24,7 +24,10 @@ body {
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* Natural content height; the renderer asks the shell to resize the
+     window to match (fitWindow), so the panel never shows dead space. */
+  height: auto;
+  max-height: 100vh;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -217,7 +220,8 @@ button.mono { font-family: ui-monospace, Consolas, monospace; }
 }
 
 /* ---- friends list ---- */
-#roster { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+/* min-height ≈ 1½ friend rows: a touch of room below the list, not a void */
+#roster { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; min-height: 84px; }
 .member {
   display: flex;
   align-items: center;

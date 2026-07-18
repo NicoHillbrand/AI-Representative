@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld("huddle", {
   storeGet: () => ipcRenderer.invoke("store-get"),
   storeSet: (patch) => ipcRenderer.invoke("store-set", patch),
   hideWindow: () => ipcRenderer.send("hide-window"),
+  quitApp: () => ipcRenderer.send("quit-app"),
+  resizeWindow: (height) => ipcRenderer.send("resize-window", height),
   openExternal: (url) => ipcRenderer.send("open-external", url),
   copyText: (text) => ipcRenderer.send("copy-text", text),
   notify: (title, body, silent) => ipcRenderer.send("notify", { title, body, silent }),

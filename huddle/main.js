@@ -109,6 +109,18 @@ function createTray() {
 ipcMain.handle("store-get", () => storeGet());
 ipcMain.handle("store-set", (_e, patch) => storeSet(patch));
 ipcMain.on("hide-window", () => win?.hide());
+ipcMain.on("quit-app", () => app.quit());
+// The renderer reports its natural content height so the window hugs the
+// content (no dead space under a short friends list).
+ipcMain.on("resize-window", (_e, height) => {
+  if (!win || typeof height !== "number" || !Number.isFinite(height)) return;
+  const h = Math.round(Math.min(640, Math.max(180, height)));
+  const [w] = win.getSize();
+  // setSize can be a no-op while resizable is false — toggle around it.
+  win.setResizable(true);
+  win.setSize(w, h);
+  win.setResizable(false);
+});
 ipcMain.on("open-external", (_e, url) => {
   if (typeof url === "string" && /^https?:\/\//.test(url)) shell.openExternal(url);
 });
