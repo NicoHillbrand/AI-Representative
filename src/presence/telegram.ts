@@ -326,11 +326,15 @@ async function onMessage(msg: any): Promise<void> {
   }
 
   if (member && text.startsWith("/up")) {
-    const [, minsRaw, ...rest] = text.split(/\s+/);
-    const mins = Number(minsRaw);
+    // "/up", "/up 45", "/up 45min focus time", "/up focus time" all work:
+    // a leading number (with optional "min"/"m" suffix) is the window, the
+    // rest is the note.
+    const [, first, ...rest] = text.split(/\s+/);
+    const mins = first ? parseInt(first, 10) : NaN;
+    const note = (Number.isFinite(mins) ? rest : [first ?? "", ...rest]).join(" ").trim();
     await dm(
       chatId,
-      applyAvailability(member, Number.isFinite(mins) ? mins : undefined, [], rest.join(" ") || undefined),
+      applyAvailability(member, Number.isFinite(mins) ? mins : undefined, [], note || undefined),
     );
     return;
   }

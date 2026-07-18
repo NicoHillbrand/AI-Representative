@@ -58,8 +58,9 @@ header#drag-bar {
 
 section { padding: 14px; overflow-y: auto; }
 #main, #settings, #interests { display: flex; flex-direction: column; flex: 1; gap: 10px; }
-/* explicit display on sections would otherwise override the hidden attribute */
-section[hidden] { display: none !important; }
+/* explicit display (flex etc.) anywhere would otherwise override the hidden
+   attribute — e.g. .self-status kept "Me (inactive)" visible while available */
+[hidden] { display: none !important; }
 
 h1 { font-size: 16px; margin-bottom: 8px; }
 label { display: block; color: var(--muted); }
