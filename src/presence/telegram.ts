@@ -7,8 +7,11 @@ import { createSession, type Session } from "../negotiation/store.js";
 import { processTurn, summarize } from "../negotiation/negotiate.js";
 import {
   acceptCall,
+  addFriendByCode,
+  bindTelegramChat,
   hasLiveSubscriber,
   memberByTelegramChat,
+  pairWithCode,
   redeemTelegramLinkCode,
   roster,
   setEventSink,
@@ -204,7 +207,7 @@ async function onMessage(msg: any): Promise<void> {
         chatId,
         member
           ? `You're linked as ${member.displayName}. /help for commands.`
-          : "Hi! I'm an AI representative — ask me anything about my principal.\nHuddle users: link me from the overlay (settings → Telegram) to get notifications here.",
+          : "Hi! I'm an AI representative — ask me anything about my principal.\nGot a friend code? /join <code> <your name> puts you in the Huddle circle right here — or link an existing overlay from its settings.",
       );
     }
     return;
@@ -216,8 +219,60 @@ async function onMessage(msg: any): Promise<void> {
     await dm(
       chatId,
       member
-        ? `/up [minutes] [note] — go available (or just say it in plain words)\n/status — who's up for a call\n/clear — stop being available\n${negotiateHelp}\n/unlink — disconnect Telegram\nAnything else: chat with the representative.`
-        : `Ask me anything about my principal.\n${negotiateHelp}\nHuddle users: link from the overlay (settings → Telegram).`,
+        ? `/up [minutes] [note] — go available (or just say it in plain words)\n/status — who's up for a call\n/clear — stop being available\n/code — your friend code to share\n/addfriend <code> — add a friend\n${negotiateHelp}\n/unlink — disconnect Telegram\nAnything else: chat with the representative.`
+        : `Ask me anything about my principal.\n${negotiateHelp}\n/join <friend-code> <name> — join the Huddle circle right here on Telegram (no install), or link an existing overlay from its settings.`,
+    );
+    return;
+  }
+
+  // Telegram-only membership: no overlay required, ever. A friend's code is
+  // the credential, exactly as in the overlay's onboarding.
+  if (text.startsWith("/join")) {
+    if (member) {
+      await dm(chatId, `You're already in as ${member.displayName}.`);
+      return;
+    }
+    const [, code, ...nameParts] = text.split(/\s+/);
+    const name = nameParts.join(" ");
+    if (!code || !name) {
+      await dm(chatId, "Usage: /join <friend-code> <your name>\ne.g. /join kqm3-x7p2 Ada");
+      return;
+    }
+    const result = pairWithCode(code, name, config.huddleInviteCodes);
+    if (!result.ok) {
+      await dm(chatId, "That code doesn't match anyone — ask your friend for theirs (/code shows it).");
+      return;
+    }
+    bindTelegramChat(result.member, chatId);
+    await dm(
+      chatId,
+      `Welcome, ${result.member.displayName}! You're in — right here on Telegram, no install needed.\nYour own friend code (share it to add people): ${result.member.friendCode}\nTry: /up 60, /status, or just say "up for a call in the next hour". /help for everything.`,
+    );
+    return;
+  }
+
+  if (member && text === "/code") {
+    await dm(
+      chatId,
+      `Your friend code: ${member.friendCode}\nAnyone can join as your friend with: /join ${member.friendCode} TheirName — or enter it in the desktop overlay.`,
+    );
+    return;
+  }
+
+  if (member && text.startsWith("/addfriend")) {
+    const code = text.split(/\s+/)[1];
+    if (!code) {
+      await dm(chatId, "Usage: /addfriend <their-friend-code>");
+      return;
+    }
+    const result = addFriendByCode(member, code);
+    await dm(
+      chatId,
+      result.ok
+        ? `You and ${result.friend.displayName} are now friends.`
+        : result.error === "self_code"
+          ? "That's your own code."
+          : "No one has that code — it may have been rotated.",
     );
     return;
   }

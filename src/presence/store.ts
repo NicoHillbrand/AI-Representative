@@ -256,16 +256,20 @@ export function createTelegramLinkCode(member: Member): string {
   return code;
 }
 
+/** One chat ↔ one member: unbinds the chat elsewhere first. */
+export function bindTelegramChat(member: Member, chatId: number): void {
+  for (const m of members.values()) if (m.telegramChatId === chatId) m.telegramChatId = undefined;
+  member.telegramChatId = chatId;
+  save();
+}
+
 export function redeemTelegramLinkCode(code: string, chatId: number): Member | undefined {
   const entry = tgLinkCodes.get(code.trim());
   tgLinkCodes.delete(code.trim());
   if (!entry || Date.now() > entry.expiresAt) return undefined;
   const member = members.get(entry.memberId);
   if (!member) return undefined;
-  // One chat ↔ one member: unbind the chat elsewhere first.
-  for (const m of members.values()) if (m.telegramChatId === chatId) m.telegramChatId = undefined;
-  member.telegramChatId = chatId;
-  save();
+  bindTelegramChat(member, chatId);
   return member;
 }
 

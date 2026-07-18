@@ -46,6 +46,7 @@ your friends see nothing of you.
 | Quick-set from tray | right-click tray → "Available for 60 min" |
 | Add / remove friends | settings → **My friend code** (click to copy, rotatable — rotation doesn't affect existing friends) to be added; paste a friend's code under **Friends** to add them. Removing a friend (×) is mutual — you disappear from each other's rosters. |
 | Telegram (optional) | settings → **Telegram notifications** → Link: pings, call requests (with an inline **Accept** button) and friend-available updates reach you on Telegram whenever your overlay isn't running. Message the bot `/up 60 coworking` — or plain words like "up for a call about X in the next hour" — to go available from your phone. Requires the server to set `TELEGRAM_BOT_TOKEN`. |
+| Telegram-only friends | no install needed at all: they message the bot `/join <your-friend-code> <their name>` and live entirely in Telegram — notifications, `/up`, `/status`, `/code`, `/addfriend`. |
 | Settings (⚙ in header) | friend code + friends list, Telegram link, call type presets, shortcut recorder, **my call link** (your Meet/Zoom/... room, sent with your call requests), quiet pings (no sound), friend-available notifications, start at login, sign out |
 
 True Google Meet room creation would require Google OAuth per user (Calendar
