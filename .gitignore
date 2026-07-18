@@ -11,3 +11,5 @@ content/interests.ts
 # Private context for the chat representative — never committed.
 # Bootstrapped from content/private.example.ts on first run.
 content/private.ts
+# Private Claude context — deployment specifics stay local.
+CLAUDE.md
