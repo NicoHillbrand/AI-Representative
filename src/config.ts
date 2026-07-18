@@ -27,7 +27,9 @@ export const config = {
   classifierModel: process.env.CLASSIFIER_MODEL ?? "gemini-3.1-flash-lite",
   corsOrigins: process.env.CORS_ORIGINS ?? "",
   // --- Huddle presence overlay (specs/desktop-call-overlay.md) ---------------
-  // Reusable invite codes friends redeem once to pair a device. Empty = pairing disabled.
+  // Bootstrap codes for the FIRST member only (they join friendless). Everyone
+  // else joins with a member's personal friend code. Blank this after
+  // bootstrapping — friend codes keep working without it.
   huddleInviteCodes: (process.env.HUDDLE_INVITE_CODES ?? "")
     .split(",")
     .map((c) => c.trim())

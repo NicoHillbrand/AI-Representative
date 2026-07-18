@@ -1,24 +1,31 @@
-# AI Representative — nicohillbrand.com
+# AI Representative + Huddle
 
-An AI representative of Nico Hillbrand with four surfaces:
+Two things in one small server, live at [ai.nicohillbrand.com](https://ai.nicohillbrand.com):
 
 1. **Public chat UI** — talk to an AI grounded in Nico's life-strategy document.
 2. **Public API** — `POST /api/chat`, plus the negotiation endpoints.
 3. **API docs** — human docs at `/docs.html`, machine spec at `/openapi.json`.
-4. **Agent-to-agent negotiation** — another agent connects to Nico's agent and,
-   through a **gated mutual-interest protocol**, discovers collaborations without
-   either side leaking its private position unilaterally.
+4. **Agent-to-agent negotiation** — another agent connects and, through a
+   **gated mutual-interest protocol**, discovers collaborations without either
+   side leaking its private position unilaterally.
+5. **Huddle** — a desktop overlay ([`huddle/`](huddle/README.md)) for friends to
+   signal "up for a spontaneous call in the next hour", see who else is, and
+   hop into a call by mutual consent.
 
-Built with Node/TypeScript, Express, and the Google Gen AI SDK (`gemini-2.5-flash`
-by default). The whole LLM layer lives in `src/llm.ts`, so swapping providers is a
-one-file change.
+Built with Node/TypeScript and Express; LLM calls go through the Google Gen AI
+SDK (`gemini-3.5-flash` by default, classifier on `gemini-3.1-flash-lite`).
+The whole LLM layer lives in `src/llm.ts`, so swapping providers is a one-file
+change. Huddle uses no LLM at all.
+
+Fork it to run your own representative: swap `content/public-doc.md` (what it
+knows) and `content/interests.ts` (what it wants), set your key, deploy.
 
 ## The negotiation gate (the interesting part)
 
 Two planes, so hidden interests can't leak:
 
 - **Matching plane** (`src/negotiation/matcher.ts`, `content/interests.ts`) — holds
-  Nico's full interest set, including **hidden** ones. It classifies what the
+  the full interest set, including **hidden** ones. It classifies what the
   counterpart asserts and computes matches **deterministically**. This is the only
   place the hidden registry is read.
 - **Conversational plane** (`src/negotiation/negotiate.ts`) — the LLM that actually
@@ -31,16 +38,34 @@ A hidden interest is confirmed **only** when the counterpart's agent independent
 asserts the same interest. The only things that leave a session are turn replies,
 confirmed matches, and a bounded end-of-session summary.
 
-Edit `content/interests.ts` to change what Nico is (publicly / privately) interested in,
-and `content/public-doc.md` to change what the representative knows.
-
 `content/interests.ts` is **gitignored** — its hidden entries are private by
 definition, so the real registry never enters the repo. On a fresh clone the
 dev/start/typecheck scripts create it automatically from
 `content/interests.example.ts`; edit the created copy. When deploying, copy
 your real `interests.ts` to the server by hand (it won't arrive via git).
 
-## Local setup
+## Huddle (the overlay)
+
+An Electron tray overlay in [`huddle/`](huddle/README.md); the presence backend
+(`src/presence/`) runs inside this same server. Design highlights:
+
+- **Pairwise friend graph** — every member has a personal, rotatable friend
+  code. Joining the server with a friend's code creates your account *and*
+  makes you two friends; your roster shows only your own friends. Everything
+  (roster, live updates, pings, call requests) is filtered by friendship
+  **server-side** — friends-of-friends never receive your data.
+- **Calls by mutual consent** — request → accept → a room opens for both, with
+  a copyable link. Your own room link (e.g. Google Meet) rides along with your
+  requests; otherwise the server mints one from `HUDDLE_CALL_LINK`.
+- **Nothing sensitive persists server-side** except who's paired and the friend
+  graph (`data/presence-members.json`, gitignored). Availability signals are
+  in-memory and expire on their own.
+
+To run it: `cd huddle && npm install && npm start`, then enter the server URL
+and the friend code of whoever invited you. Full details in
+[huddle/README.md](huddle/README.md).
+
+## Run your own (local)
 
 ```bash
 npm install
@@ -52,86 +77,102 @@ npm run dev               # http://localhost:8080
 - `npm start` — run the server (tsx, no build step needed).
 - `npm run typecheck` — type-check without emitting.
 
-Auth: the Gemini client reads `GEMINI_API_KEY` from `.env`. On `gemini-2.5-flash`
-(and `-flash-lite`) `src/llm.ts` disables model "thinking" so short replies don't
-get truncated on the free tier; on `gemini-2.5-pro` thinking stays on.
+Models are set in `.env` (`MODEL`, `CLASSIFIER_MODEL`). `src/llm.ts` picks the
+right "thinking" knob per model generation (Gemini 3.x `thinkingLevel`, 2.x
+`thinkingBudget`), keeping replies cheap and untruncated on flash-class models.
+
+For the overlay against a local server you also need `CORS_ORIGINS=*` (the
+overlay is a `file://` page) and a `HUDDLE_INVITE_CODES` bootstrap code.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/chat` | Chat with the representative (`stream: true` for SSE). |
-| GET  | `/api/interests` | List Nico's **public** interests. |
+| GET  | `/api/interests` | List the **public** interests. |
 | POST | `/api/negotiate/sessions` | Open a negotiation session → `{ sessionId, token }`. |
 | POST | `/api/negotiate/sessions/:id/messages` | Send a message (Bearer token). |
 | GET  | `/api/negotiate/sessions/:id/summary` | Bounded summary + confirmed matches (Bearer token). |
 | GET  | `/openapi.json` | OpenAPI 3.1 spec. |
 | GET  | `/healthz` | Health check. |
 
-Sessions are in-memory and expire after 6 hours (a server restart clears them).
-For production persistence, swap `src/negotiation/store.ts` for Redis/SQLite.
+Negotiation sessions are in-memory and expire after 6 hours (a restart clears
+them); swap `src/negotiation/store.ts` for Redis/SQLite if you need more.
+The `/api/presence/*` routes are Huddle's private API (device-token auth) —
+see `src/server.ts`; they're deliberately not in the public docs.
 
-## Deploying to the VPS (nicohillbrand.com)
+## Deploying (the pattern running in production)
 
-1. **Install Node 20+** and clone the repo onto the VPS.
-2. **Configure** `.env` with your `GEMINI_API_KEY`, `PORT=8080`, and
-   `PUBLIC_BASE_URL=https://nicohillbrand.com`.
-3. **Run it under systemd** so it restarts on boot/crash:
+Caddy in front (automatic HTTPS, SSE just works), the app under systemd as a
+dedicated user, secrets in `/etc` with mode 600:
 
-   ```ini
-   # /etc/systemd/system/ai-representative.service
-   [Unit]
-   Description=AI Representative
-   After=network.target
+```bash
+sudo git clone https://github.com/NicoHillbrand/AI-Representative.git /opt/ai-representative
+sudo useradd --system --home /opt/ai-representative --shell /usr/sbin/nologin airep
+# copy your REAL content/interests.ts up by hand (it's gitignored)
+cd /opt/ai-representative && sudo -u airep npm install && sudo chown -R airep:airep .
 
-   [Service]
-   WorkingDirectory=/opt/ai-representative
-   ExecStart=/usr/bin/npm start
-   Restart=always
-   Environment=NODE_ENV=production
-   EnvironmentFile=/opt/ai-representative/.env
-   User=www-data
+sudo mkdir -p /etc/ai-representative
+sudo tee /etc/ai-representative/ai-representative.env >/dev/null <<'EOF'
+GEMINI_API_KEY=your-key
+PORT=8091
+PUBLIC_BASE_URL=https://your.domain
+CORS_ORIGINS=*
+HUDDLE_INVITE_CODES=one-time-bootstrap-code
+EOF
+sudo chmod 600 /etc/ai-representative/ai-representative.env
+```
 
-   [Install]
-   WantedBy=multi-user.target
-   ```
+Systemd unit (`/etc/systemd/system/ai-representative.service`):
 
-   ```bash
-   sudo systemctl enable --now ai-representative
-   ```
+```ini
+[Unit]
+Description=AI Representative
+After=network.target
 
-4. **Reverse-proxy with nginx** (TLS via certbot). Note the SSE-friendly settings:
+[Service]
+Type=simple
+User=airep
+WorkingDirectory=/opt/ai-representative
+EnvironmentFile=/etc/ai-representative/ai-representative.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
 
-   ```nginx
-   server {
-     server_name nicohillbrand.com;
-     location / {
-       proxy_pass http://127.0.0.1:8080;
-       proxy_http_version 1.1;
-       proxy_set_header Host $host;
-       proxy_set_header X-Forwarded-For $remote_addr;
-       # Streaming (SSE) needs buffering off:
-       proxy_buffering off;
-       proxy_cache off;
-       proxy_read_timeout 300s;
-     }
-   }
-   ```
+[Install]
+WantedBy=multi-user.target
+```
 
-   ```bash
-   sudo certbot --nginx -d nicohillbrand.com
-   ```
+Caddyfile block:
 
-That's it — the chat UI, negotiation sandbox, and docs are all served from the
-same process.
+```caddy
+your.domain {
+  encode gzip zstd
+  reverse_proxy 127.0.0.1:8091
+}
+```
+
+```bash
+sudo systemctl enable --now ai-representative
+sudo systemctl reload caddy
+```
+
+Then pair your own overlay with the bootstrap code, **blank
+`HUDDLE_INVITE_CODES` and restart** — from then on the only way in is a
+member's personal friend code.
+
+Updating later: `sudo -u airep git pull && sudo systemctl restart ai-representative`
+(your `interests.ts` and `data/` are untouched by pulls).
 
 ## Notes & next steps
 
-- **Streaming** works end-to-end for `/api/chat`; the negotiation turns are
-  request/response (a turn involves a classification step + a reply).
-- **Cost/latency**: everything runs on `gemini-2.5-flash` by default (free-tier
-  friendly). The classifier uses Gemini structured output (`responseSchema`).
-  Tune the model in `.env` (`gemini-2.5-flash-lite` is cheapest, `gemini-2.5-pro`
-  is strongest).
-- **Hardening ideas**: rate-limit `/api/*`, add a global API key for the negotiation
-  endpoints if you don't want them fully open, and move sessions to a real store.
+- **Streaming** works end-to-end for `/api/chat`; negotiation turns are
+  request/response (a turn is a classification step + a reply).
+- **Cost/latency**: the classifier uses Gemini structured output
+  (`responseSchema`) on a cheap model. Tune `MODEL` / `CLASSIFIER_MODEL` in
+  the env to trade cost against quality.
+- **Hardening ideas**: rate-limit `/api/*`, add a global API key for the
+  negotiation endpoints if you don't want them fully open, move sessions to a
+  real store.
+- **Huddle phase 2**: packaged installers (electron-builder) so friends don't
+  need Node — autostart only takes effect once packaged.
