@@ -20,14 +20,19 @@ export interface Activity {
   label: string;
   /** "all", or the memberIds allowed to see this activity. */
   visibleTo: "all" | string[];
-  /** Per-activity duration; falls back to the signal window when absent. */
+  /** How long this OFFER stands (availability window for the activity);
+   * falls back to the signal window when absent. */
   minutes?: number;
+  /** Expected length of the call itself ("a 5-minute call on X") — a second,
+   * independent time from the window above. Display-only. */
+  durationMinutes?: number;
 }
 
 interface StoredActivity {
   label: string;
   visibleTo: "all" | string[];
   expiresAt: number;
+  durationMinutes?: number;
 }
 
 export interface Signal {
@@ -83,8 +88,9 @@ export interface RosterEntry {
   available: boolean;
   availableUntil?: string;
   note?: string;
-  /** Activities this viewer is allowed to see, each with its own expiry. */
-  activities?: { label: string; availableUntil: string }[];
+  /** Activities this viewer is allowed to see, each with its own expiry and
+   * (optionally) the expected call length. */
+  activities?: { label: string; availableUntil: string; durationMinutes?: number }[];
 }
 
 const members = new Map<string, Member>();
@@ -313,6 +319,7 @@ function entryFor(m: Member, viewerId: string): RosterEntry {
           activities: visible.map((a) => ({
             label: a.label,
             availableUntil: new Date(a.expiresAt).toISOString(),
+            ...(a.durationMinutes ? { durationMinutes: a.durationMinutes } : {}),
           })),
         }
       : {}),
@@ -320,6 +327,8 @@ function entryFor(m: Member, viewerId: string): RosterEntry {
 }
 
 const clampMins = (m: number) => Math.min(180, Math.max(15, Math.round(m)));
+// Call length may be tiny on purpose ("a 5-minute call") — separate clamp.
+const clampDuration = (m: number) => Math.min(240, Math.max(1, Math.round(m)));
 
 export function setSignal(
   member: Member,
@@ -333,6 +342,7 @@ export function setSignal(
     label: a.label,
     visibleTo: a.visibleTo,
     expiresAt: now + clampMins(a.minutes ?? windowMins) * 60_000,
+    ...(a.durationMinutes ? { durationMinutes: clampDuration(a.durationMinutes) } : {}),
   }));
   const wasActive = !!member.signal && now < member.signal.expiresAt;
   member.signal = {

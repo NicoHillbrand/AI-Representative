@@ -280,7 +280,11 @@ function parseActivities(x: unknown): Activity[] {
       : "all";
     const minutes =
       typeof a.minutes === "number" && Number.isFinite(a.minutes) ? a.minutes : undefined;
-    return [{ label, visibleTo, minutes }];
+    const durationMinutes =
+      typeof a.durationMinutes === "number" && Number.isFinite(a.durationMinutes)
+        ? a.durationMinutes
+        : undefined;
+    return [{ label, visibleTo, minutes, durationMinutes }];
   });
 }
 

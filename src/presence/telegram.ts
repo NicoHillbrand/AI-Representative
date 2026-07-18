@@ -73,7 +73,9 @@ function onPresenceEvent(e: PresenceEvent): void {
     if (!e.accepterLive && e.accepter.telegramChatId)
       dm(e.accepter.telegramChatId, `📞 Call with ${e.requester.displayName}: ${e.url}`);
   } else if (e.type === "went-available" && !e.live && e.friend.telegramChatId) {
-    const acts = e.member.signal?.activities.map((a) => a.label).join(", ");
+    const acts = e.member.signal?.activities
+      .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
+      .join(", ");
     dm(
       e.friend.telegramChatId,
       `🟢 ${e.member.displayName} is up for a call${acts ? ` — ${acts}` : ""}.`,
@@ -82,44 +84,100 @@ function onPresenceEvent(e: PresenceEvent): void {
 }
 
 // --- natural-language availability ----------------------------------------------
-const INTENT_SYSTEM = `You read one Telegram message a user sent to their "Huddle" bot and decide what they want.
+// Exported for tests — the digit-loop workaround (string minutes) is easy to
+// regress by "simplifying" the schema back to numbers.
+export const INTENT_SYSTEM = `You read one Telegram message a user sent to their "Huddle" bot and decide what they want.
 Huddle lets friends signal "I'm up for a spontaneous call in the next N minutes", optionally with topics/activities and a short note.
 
+There are TWO independent times, do not conflate them (all minutes are digit strings like "60"):
+- windowMinutes: how long the person is REACHABLE (the offer window). "in the next hour" → "60".
+- durationMinutes (per activity): how long the CALL ITSELF would be. "a 5-minute call about X in the next hour" → windowMinutes "60", activities [{label:"X", durationMinutes:"5"}].
+
 intents:
-- "set_availability": they're saying they are (or want to be) available for a call. Extract windowMinutes (default 60, clamp 15-180), activities (short topic labels they mention, e.g. "coworking", "the eval project"), and note (any remaining flavor text, short).
+- "set_availability": they're saying they are (or want to be) available for a call. Extract windowMinutes (default "60") and activities: EVERY topic or activity they name becomes one {label, durationMinutes?} entry (durationMinutes only when a call length is stated). note = any remaining flavor text, short.
 - "clear_availability": they say they're done / no longer available.
 - "chat": anything else — a question or conversation not about their availability.`;
 
-const INTENT_SCHEMA = {
+export const INTENT_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     intent: { type: Type.STRING, enum: ["set_availability", "clear_availability", "chat"] },
-    windowMinutes: { type: Type.NUMBER },
-    activities: { type: Type.ARRAY, items: { type: Type.STRING } },
+    // Minutes as STRINGS on purpose: with NUMBER/INTEGER fields Gemini's
+    // structured output can loop digits ("60.000..." / "60000...") until
+    // MAX_TOKENS when the message contains two different durations. A quoted
+    // string terminates cleanly; we parseInt in code.
+    windowMinutes: { type: Type.STRING, description: "minutes, digits only, e.g. \"60\"" },
+    activities: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          label: { type: Type.STRING },
+          durationMinutes: { type: Type.STRING, description: "minutes, digits only, e.g. \"5\"" },
+        },
+        required: ["label"],
+      },
+    },
     note: { type: Type.STRING },
   },
-  required: ["intent"],
+  // activities is required (empty array when none): optional, the model
+  // frequently stopped emitting after windowMinutes and dropped the topics.
+  required: ["intent", "activities"],
 };
+
+interface IntentActivity {
+  label: string;
+  durationMinutes?: number;
+}
 
 interface Intent {
   intent: "set_availability" | "clear_availability" | "chat";
   windowMinutes?: number;
-  activities?: string[];
+  activities?: IntentActivity[];
   note?: string;
 }
 
-function applyAvailability(member: Member, mins: number | undefined, activities: string[], note?: string): string {
+const asMinutes = (v: unknown): number | undefined => {
+  const n = parseInt(String(v ?? ""), 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
+/** Raw schema shape (string minutes) → typed Intent. */
+export function toIntent(raw: any): Intent {
+  return {
+    intent: raw.intent,
+    windowMinutes: asMinutes(raw.windowMinutes),
+    activities: Array.isArray(raw.activities)
+      ? raw.activities
+          .filter((a: any) => typeof a?.label === "string" && a.label.trim())
+          .map((a: any) => ({ label: a.label.trim(), durationMinutes: asMinutes(a.durationMinutes) }))
+      : undefined,
+    note: typeof raw.note === "string" && raw.note.trim() ? raw.note.trim() : undefined,
+  };
+}
+
+function applyAvailability(
+  member: Member,
+  mins: number | undefined,
+  activities: IntentActivity[],
+  note?: string,
+): string {
   const entry = setSignal(
     member,
     mins ?? 60,
     note,
-    activities.slice(0, 20).map((label) => ({ label: label.slice(0, 60), visibleTo: "all" as const })),
+    activities.slice(0, 20).map((a) => ({
+      label: a.label.slice(0, 60),
+      visibleTo: "all" as const,
+      durationMinutes: a.durationMinutes,
+    })),
   );
   const until = entry.availableUntil ? new Date(entry.availableUntil) : undefined;
   const mm = until ? Math.round((until.getTime() - Date.now()) / 60_000) : mins ?? 60;
-  return `🟢 You're up for a call for ${mm} min${
-    activities.length ? ` — ${activities.join(", ")}` : ""
-  }. Your friends' overlays just updated.`;
+  const actText = activities
+    .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
+    .join(", ");
+  return `🟢 You're reachable for ${mm} min${actText ? ` — ${actText}` : ""}. Your friends' overlays just updated.`;
 }
 
 // --- negotiation mode --------------------------------------------------------------
@@ -310,7 +368,11 @@ async function onMessage(msg: any): Promise<void> {
               .map(
                 (m) =>
                   `🟢 ${m.displayName}${
-                    m.activities?.length ? ` — ${m.activities.map((a) => a.label).join(", ")}` : ""
+                    m.activities?.length
+                      ? ` — ${m.activities
+                          .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
+                          .join(", ")}`
+                      : ""
                   }${m.note ? ` (${m.note})` : ""}`,
               )
               .join("\n")
@@ -350,11 +412,13 @@ async function onMessage(msg: any): Promise<void> {
   // everyone else talks straight to the representative.
   if (member) {
     try {
-      const intent = await extractJson<Intent>({
-        system: INTENT_SYSTEM,
-        messages: [{ role: "user", content: text.slice(0, 1000) }],
-        schema: INTENT_SCHEMA,
-      });
+      const intent = toIntent(
+        await extractJson<any>({
+          system: INTENT_SYSTEM,
+          messages: [{ role: "user", content: text.slice(0, 1000) }],
+          schema: INTENT_SCHEMA,
+        }),
+      );
       if (intent.intent === "set_availability") {
         await dm(
           chatId,

@@ -53,14 +53,18 @@ async function persistActivities() {
   cfg = await window.huddle.storeSet({ activities: cfg.activities });
 }
 
-/** Chips for signal activities: "37min coworking". */
+/** Chips for signal activities. Two independent times: how long the offer
+ * still stands (countdown) and, if set, the expected call length —
+ * "55min AI evals (~5min call)". */
 function activityChips(activities) {
   const wrap = document.createElement("div");
   wrap.className = "chips";
   for (const a of activities) {
     const c = document.createElement("span");
     c.className = "chip";
-    c.textContent = `${remainingMin(a)}min ${a.label}`;
+    c.textContent = `${remainingMin(a)}min ${a.label}${
+      a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""
+    }`;
     wrap.append(c);
   }
   return wrap;
@@ -116,13 +120,15 @@ function renderActivitySelect() {
       const check = document.createElement("input");
       check.type = "checkbox";
       check.checked = !!a.selected;
+      // Two independent times: how long the OFFER stands, and how long the
+      // call itself would be ("next 60 min I'm up for a 5-min call on X").
       const mins = document.createElement("input");
       mins.type = "number";
       mins.className = "act-min";
       mins.min = 15;
       mins.max = 180;
-      mins.placeholder = "min";
-      mins.title = "Duration for this call type (defaults to the window above)";
+      mins.placeholder = "offer";
+      mins.title = "How long this offer stands, in minutes (defaults to the window above)";
       mins.value = a.minutes ?? "";
       mins.hidden = !a.selected;
       mins.addEventListener("input", () => {
@@ -130,13 +136,28 @@ function renderActivitySelect() {
         a.minutes = mins.value && v >= 15 && v <= 180 ? Math.round(v) : undefined;
         persistActivities();
       });
+      const dur = document.createElement("input");
+      dur.type = "number";
+      dur.className = "act-min";
+      dur.min = 1;
+      dur.max = 240;
+      dur.placeholder = "~call";
+      dur.title = "Expected call length in minutes (optional — shown to friends)";
+      dur.value = a.durationMinutes ?? "";
+      dur.hidden = !a.selected;
+      dur.addEventListener("input", () => {
+        const v = Number(dur.value);
+        a.durationMinutes = dur.value && v >= 1 && v <= 240 ? Math.round(v) : undefined;
+        persistActivities();
+      });
       check.addEventListener("change", () => {
         a.selected = check.checked;
         mins.hidden = !a.selected;
+        dur.hidden = !a.selected;
         persistActivities();
       });
       label.append(check, document.createTextNode(a.label));
-      main.append(label, mins);
+      main.append(label, mins, dur);
       row.append(main);
       return row;
     }),
@@ -453,7 +474,12 @@ async function setAvailable(mins) {
   const note = $("self-note").value.trim();
   const activities = cfg.activities
     .filter((a) => a.selected)
-    .map(({ label, visibleTo, minutes }) => ({ label, visibleTo, minutes }));
+    .map(({ label, visibleTo, minutes, durationMinutes }) => ({
+      label,
+      visibleTo,
+      minutes,
+      durationMinutes,
+    }));
   const res = await api("/api/presence/signal", {
     method: "POST",
     body: JSON.stringify({ windowMinutes: mins, ...(note ? { note } : {}), activities }),

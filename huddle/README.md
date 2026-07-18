@@ -39,7 +39,7 @@ your friends see nothing of you.
 | Action | How |
 |---|---|
 | Show / hide | `Ctrl/Cmd+Shift+Space` (rebindable in settings), tray click, `Esc` hides. The overlay stays on screen until you explicitly hide it. |
-| Go available | `+` in the header opens the composer: 30/60/90 min or custom (15–180), tick call types — each with its own optional duration (chips read "30min coworking" and count down) — plus an optional note |
+| Go available | `+` in the header opens the composer: 30/60/90 min or custom (15–180), tick call types — each with **two optional times**: how long the offer stands ("offer", counts down) and the expected call length ("~call") — plus an optional note. Chips read "55min AI evals (~5min call)". |
 | Call type presets | click "Me (inactive)" (or settings → Call type presets…): add/remove and set per-preset visibility (everyone / specific friends). Defaults: get unstuck on a task, meditation, coworking, body doubling |
 | Ping a friend | 👋 on their row — toast + notification on their overlay (throttled; tells you if they're offline) |
 | Call a friend | `call` on an available friend's row sends a request; **they must accept** — then the room opens for both, with a **Copy link** button on the toast (e.g. to reshare over Messenger). The room is your own link if you set one (settings → My call link, e.g. a Google Meet), otherwise a fresh room from the server's `HUDDLE_CALL_LINK` template (`{room}` replaced per call; default Jitsi). Requests expire after 2 min and are single-use. |
