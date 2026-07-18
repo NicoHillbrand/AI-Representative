@@ -28,6 +28,10 @@ import {
   opportunitiesFor,
   setPresets,
   presetsFor,
+  groupsFor,
+  setGroup,
+  removeGroup,
+  resolveGroup,
   type Member,
   type Activity,
 } from "./presence/store.js";
@@ -283,13 +287,24 @@ function parseActivities(x: unknown): Activity[] {
     const visibleTo: Activity["visibleTo"] = Array.isArray(a.visibleTo)
       ? a.visibleTo.filter((v: unknown) => typeof v === "string").slice(0, 100)
       : "all";
+    const visibleToGroups = Array.isArray(a.visibleToGroups)
+      ? a.visibleToGroups.filter((v: unknown): v is string => typeof v === "string").slice(0, 20)
+      : undefined;
     const minutes =
       typeof a.minutes === "number" && Number.isFinite(a.minutes) ? a.minutes : undefined;
     const durationMinutes =
       typeof a.durationMinutes === "number" && Number.isFinite(a.durationMinutes)
         ? a.durationMinutes
         : undefined;
-    return [{ label, visibleTo, minutes, durationMinutes }];
+    return [
+      {
+        label,
+        visibleTo,
+        ...(visibleToGroups?.length ? { visibleToGroups } : {}),
+        minutes,
+        durationMinutes,
+      },
+    ];
   });
 }
 
@@ -314,12 +329,58 @@ app.post("/api/presence/presets", (req, res) => {
     });
     return;
   }
-  const presets = parseActivities(req.body.presets).map(({ label, visibleTo, durationMinutes }) => ({
-    label,
-    visibleTo,
-    durationMinutes,
-  }));
+  const presets = parseActivities(req.body.presets).map(
+    ({ label, visibleTo, visibleToGroups, durationMinutes }) => ({
+      label,
+      visibleTo,
+      visibleToGroups,
+      durationMinutes,
+    }),
+  );
   res.json({ presets: setPresets(member, presets) });
+});
+
+// Named friend groups — reusable post audiences ("close", "climbing crew").
+// Same sync model as presets: edited from the overlay or Telegram (/groups),
+// pushed to the member's own devices via "groups" SSE events.
+app.get("/api/presence/groups", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  res.json({ groups: groupsFor(member) });
+});
+
+app.post("/api/presence/groups", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  const { name, memberIds } = req.body ?? {};
+  if (typeof name !== "string" || !Array.isArray(memberIds)) {
+    res.status(400).json({
+      error: "bad_request",
+      message: "Body must be { name: string, memberIds: string[] } (replaces the group).",
+    });
+    return;
+  }
+  const result = setGroup(
+    member,
+    name,
+    memberIds.filter((v: unknown): v is string => typeof v === "string"),
+  );
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ groups: result.groups });
+});
+
+app.delete("/api/presence/groups/:name", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  const groups = removeGroup(member, req.params.name);
+  if (!groups) {
+    res.status(404).json({ error: "not_found", message: "No group with that name." });
+    return;
+  }
+  res.json({ groups });
 });
 
 app.post("/api/presence/signal", (req, res) => {
@@ -384,8 +445,8 @@ app.post("/api/presence/call-accept", (req, res) => {
 });
 
 // Coordination opportunities: post a proposal ("climbing Saturday?") to all
-// your friends, one friend, or a chosen group. Audience is enforced
-// server-side; only the poster can take a post down early.
+// your friends, one friend, a named group, or an ad-hoc set. Audience is
+// enforced server-side; only the poster can take a post down early.
 app.post("/api/presence/opportunities", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
@@ -393,15 +454,26 @@ app.post("/api/presence/opportunities", (req, res) => {
   if (typeof text !== "string" || !text.trim()) {
     res.status(400).json({
       error: "bad_request",
-      message: 'Body must be { text: string, audience?: "all" | memberId[], minutes?: number }.',
+      message:
+        'Body must be { text: string, audience?: "all" | memberId[] | {group: name}, minutes?: number }.',
     });
     return;
   }
-  const aud = Array.isArray(audience)
-    ? audience.filter((v: unknown): v is string => typeof v === "string").slice(0, 100)
-    : "all";
+  let aud: "all" | string[] = "all";
+  let audLabel: string | undefined;
+  if (Array.isArray(audience)) {
+    aud = audience.filter((v: unknown): v is string => typeof v === "string").slice(0, 100);
+  } else if (audience && typeof audience === "object" && typeof audience.group === "string") {
+    const group = resolveGroup(member, audience.group);
+    if (!group) {
+      res.status(400).json({ error: "unknown_group" });
+      return;
+    }
+    aud = group.memberIds;
+    audLabel = group.name;
+  }
   const mins = typeof minutes === "number" && Number.isFinite(minutes) ? minutes : undefined;
-  const result = postOpportunity(member, text, aud, mins);
+  const result = postOpportunity(member, text, aud, mins, audLabel);
   if (!result.ok) {
     res
       .status(result.error === "too_fast" || result.error === "too_many" ? 429 : 400)
@@ -450,6 +522,7 @@ app.get("/api/presence/roster", (req, res) => {
   res.json({
     members: roster(member),
     opportunities: opportunitiesFor(member),
+    groups: groupsFor(member),
     callLink: config.huddleCallLink,
   });
 });
@@ -468,6 +541,7 @@ app.get("/api/presence/stream", (req, res) => {
   send("roster", {
     members: roster(member),
     opportunities: opportunitiesFor(member),
+    groups: groupsFor(member),
     callLink: config.huddleCallLink,
   });
   const unsubscribe = subscribe(send, member.id);

@@ -238,6 +238,9 @@ button.mono { font-family: ui-monospace, Consolas, monospace; }
 .opp .actions button { padding: 4px 9px; font-size: 12px; }
 /* the picker markup is reused outside a row — no indent needed here */
 #post-audience { margin: 0; }
+/* group quick-select chips in the post composer */
+.group-chips { margin: 2px 0 4px; }
+.group-chips .vis-chip { cursor: pointer; }
 
 /* ---- friends list ---- */
 /* min-height ≈ 1½ friend rows: a touch of room below the list, not a void */

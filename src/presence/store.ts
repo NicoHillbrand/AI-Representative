@@ -20,6 +20,9 @@ export interface Activity {
   label: string;
   /** "all", or the memberIds allowed to see this activity. */
   visibleTo: "all" | string[];
+  /** Group names whose CURRENT members may also see it — resolved at view
+   * time, so editing the group later changes who sees the activity. */
+  visibleToGroups?: string[];
   /** How long this OFFER stands (availability window for the activity);
    * falls back to the signal window when absent. */
   minutes?: number;
@@ -31,6 +34,7 @@ export interface Activity {
 interface StoredActivity {
   label: string;
   visibleTo: "all" | string[];
+  visibleToGroups?: string[];
   expiresAt: number;
   durationMinutes?: number;
 }
@@ -47,8 +51,17 @@ export interface Signal {
 export interface Preset {
   label: string;
   visibleTo: "all" | string[];
+  /** Group names (live references — see Activity.visibleToGroups). */
+  visibleToGroups?: string[];
   /** Expected call length in minutes (optional, display-only). */
   durationMinutes?: number;
+}
+
+/** A named set of friends ("close", "climbing crew") reusable as a post
+ * audience. Private to the member — recipients never learn a group exists. */
+export interface FriendGroup {
+  name: string;
+  memberIds: string[];
 }
 
 export interface Member {
@@ -68,6 +81,9 @@ export interface Member {
    * editor (it re-syncs on every change); Telegram-only members edit via
    * /presets. */
   presets?: Preset[];
+  /** Named friend groups, editable from the overlay (settings) and Telegram
+   * (/groups) alike. */
+  groups?: FriendGroup[];
   signal?: Signal;
 }
 
@@ -126,6 +142,7 @@ function load(): void {
         friends?: string[];
         telegramChatId?: number;
         presets?: Preset[];
+        groups?: FriendGroup[];
       }[];
     };
     for (const m of raw.members ?? []) {
@@ -138,6 +155,7 @@ function load(): void {
         friends: new Set(m.friends ?? []),
         telegramChatId: m.telegramChatId,
         presets: m.presets,
+        groups: m.groups,
       };
       members.set(member.id, member);
       for (const t of member.tokens) byToken.set(t, member);
@@ -158,6 +176,7 @@ function save(): void {
       friends: [...m.friends],
       ...(m.telegramChatId ? { telegramChatId: m.telegramChatId } : {}),
       ...(m.presets ? { presets: m.presets } : {}),
+      ...(m.groups?.length ? { groups: m.groups } : {}),
     })),
   };
   writeFileSync(dataFile, JSON.stringify(raw, null, 2));
@@ -255,6 +274,10 @@ export function unfriend(me: Member, friendId: string): boolean {
   if (!other || !me.friends.has(friendId)) return false;
   me.friends.delete(friendId);
   other.friends.delete(me.id);
+  // Ex-friends fall out of each other's groups too (groupsFor also filters
+  // at read time — this just keeps the stored file clean and clients synced).
+  pruneFromGroups(me, other.id);
+  pruneFromGroups(other, me.id);
   save();
   sendTo(me.id, "friend-removed", { memberId: other.id });
   sendTo(other.id, "friend-removed", { memberId: me.id });
@@ -330,6 +353,7 @@ export function setPresets(member: Member, presets: Preset[]): Preset[] {
     .map((p) => ({
       label: p.label.trim().slice(0, 60),
       visibleTo: p.visibleTo === "all" ? ("all" as const) : p.visibleTo.slice(0, 100),
+      ...(p.visibleToGroups?.length ? { visibleToGroups: p.visibleToGroups.slice(0, 20) } : {}),
       ...(p.durationMinutes ? { durationMinutes: clampDuration(p.durationMinutes) } : {}),
     }))
     .filter((p) => p.label)
@@ -337,6 +361,71 @@ export function setPresets(member: Member, presets: Preset[]): Preset[] {
   save();
   sendTo(member.id, "presets", { presets: member.presets });
   return member.presets;
+}
+
+// --- friend groups ----------------------------------------------------------------
+// Named audiences ("close", "climbing crew") for coordination posts. Stored
+// on the member like presets, so the overlay and the Telegram bot edit the
+// same list; "groups" SSE events keep a member's own devices in sync.
+const GROUP_MAX = 20;
+const GROUP_MEMBER_MAX = 100;
+// Names that would collide with audience keywords or break /post parsing.
+const RESERVED_GROUP_NAMES = new Set(["all", "everyone", "nobody"]);
+
+function sanitizeGroupName(name: string): string | undefined {
+  const n = name.trim().replace(/\s+/g, " ").slice(0, 24);
+  if (!n || /[,:]/.test(n) || RESERVED_GROUP_NAMES.has(n.toLowerCase())) return undefined;
+  return n;
+}
+
+/** Ex-friends drop out at read time, so a stale stored list never leaks. */
+export function groupsFor(member: Member): FriendGroup[] {
+  return (member.groups ?? []).map((g) => ({
+    name: g.name,
+    memberIds: g.memberIds.filter((id) => member.friends.has(id)),
+  }));
+}
+
+/** Create or replace (name matches case-insensitively). Empty groups are
+ * allowed — the overlay creates the name first, then ticks members in. */
+export function setGroup(
+  member: Member,
+  name: string,
+  memberIds: string[],
+): { ok: true; groups: FriendGroup[] } | { ok: false; error: string } {
+  const clean = sanitizeGroupName(name);
+  if (!clean) return { ok: false, error: "bad_name" };
+  const ids = [...new Set(memberIds)].filter((id) => member.friends.has(id)).slice(0, GROUP_MEMBER_MAX);
+  const groups = member.groups ?? [];
+  const idx = groups.findIndex((g) => g.name.toLowerCase() === clean.toLowerCase());
+  if (idx >= 0) groups[idx] = { name: clean, memberIds: ids };
+  else if (groups.length >= GROUP_MAX) return { ok: false, error: "too_many" };
+  else groups.push({ name: clean, memberIds: ids });
+  member.groups = groups;
+  save();
+  sendTo(member.id, "groups", { groups: groupsFor(member) });
+  return { ok: true, groups: groupsFor(member) };
+}
+
+export function removeGroup(member: Member, name: string): FriendGroup[] | undefined {
+  const before = member.groups?.length ?? 0;
+  member.groups = (member.groups ?? []).filter(
+    (g) => g.name.toLowerCase() !== name.trim().toLowerCase(),
+  );
+  if (member.groups.length === before) return undefined;
+  save();
+  sendTo(member.id, "groups", { groups: groupsFor(member) });
+  return groupsFor(member);
+}
+
+export function resolveGroup(member: Member, name: string): FriendGroup | undefined {
+  return groupsFor(member).find((g) => g.name.toLowerCase() === name.trim().toLowerCase());
+}
+
+function pruneFromGroups(member: Member, goneId: string): void {
+  if (!member.groups?.some((g) => g.memberIds.includes(goneId))) return;
+  for (const g of member.groups) g.memberIds = g.memberIds.filter((id) => id !== goneId);
+  sendTo(member.id, "groups", { groups: groupsFor(member) });
 }
 
 /** Does this member have any overlay connected right now? */
@@ -353,11 +442,15 @@ function entryFor(m: Member, viewerId: string): RosterEntry {
     return { memberId: m.id, displayName: m.displayName, available: false };
   }
   // You always see your own activities in full; others only what's shared
-  // with them. Individually lapsed activities disappear before the signal does.
+  // with them — directly, or through a group they're CURRENTLY in (group
+  // references are live: editing "close" immediately changes who sees the
+  // activity). Individually lapsed activities disappear before the signal does.
+  const inSharedGroup = (a: StoredActivity) =>
+    (a.visibleToGroups ?? []).some((g) => resolveGroup(m, g)?.memberIds.includes(viewerId));
   const visible = m.signal.activities.filter(
     (a) =>
       now < a.expiresAt &&
-      (m.id === viewerId || a.visibleTo === "all" || a.visibleTo.includes(viewerId)),
+      (m.id === viewerId || a.visibleTo === "all" || a.visibleTo.includes(viewerId) || inSharedGroup(a)),
   );
   return {
     memberId: m.id,
@@ -392,6 +485,7 @@ export function setSignal(
   const stored: StoredActivity[] = activities.map((a) => ({
     label: a.label,
     visibleTo: a.visibleTo,
+    ...(a.visibleToGroups?.length ? { visibleToGroups: a.visibleToGroups.slice(0, 20) } : {}),
     expiresAt: now + clampMins(a.minutes ?? windowMins) * 60_000,
     ...(a.durationMinutes ? { durationMinutes: clampDuration(a.durationMinutes) } : {}),
   }));
@@ -525,6 +619,8 @@ interface Opportunity {
   text: string;
   /** "all" (= the poster's friends) or specific memberIds. */
   audience: "all" | string[];
+  /** Display name for the audience when it came from a named group. */
+  audienceLabel?: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -538,6 +634,8 @@ export interface OpportunityView {
   mine: boolean;
   /** Only present on your own posts — recipients never see the list. */
   audience?: "all" | string[];
+  /** Poster only: the group name the audience came from, if any. */
+  audienceLabel?: string;
 }
 
 const opportunities = new Map<string, Opportunity>();
@@ -557,6 +655,7 @@ function oppView(o: Opportunity, viewerId: string): OpportunityView {
     expiresAt: new Date(o.expiresAt).toISOString(),
     mine: o.fromId === viewerId,
     ...(o.fromId === viewerId ? { audience: o.audience } : {}),
+    ...(o.fromId === viewerId && o.audienceLabel ? { audienceLabel: o.audienceLabel } : {}),
   };
 }
 
@@ -582,6 +681,7 @@ export function postOpportunity(
   text: string,
   audience: "all" | string[],
   minutes?: number,
+  audienceLabel?: string,
 ): { ok: true; opportunity: OpportunityView } | { ok: false; error: string } {
   const body = text.trim().slice(0, 200);
   if (!body) return { ok: false, error: "empty_text" };
@@ -599,6 +699,7 @@ export function postOpportunity(
     fromId: from.id,
     text: body,
     audience: aud,
+    ...(audienceLabel?.trim() ? { audienceLabel: audienceLabel.trim().slice(0, 60) } : {}),
     createdAt: now,
     expiresAt: now + clampOppMins(minutes ?? OPP_DEFAULT_MINS) * 60_000,
   };

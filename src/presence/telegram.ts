@@ -9,9 +9,13 @@ import {
   acceptCall,
   addFriendByCode,
   bindTelegramChat,
+  groupsFor,
   hasLiveSubscriber,
   memberByTelegramChat,
   opportunitiesFor,
+  removeGroup,
+  resolveGroup,
+  setGroup,
   pairWithCode,
   postOpportunity,
   presetsFor,
@@ -144,6 +148,8 @@ interface IntentActivity {
   durationMinutes?: number;
   /** Per-friend visibility, when known (preset picker); defaults to "all". */
   visibleTo?: "all" | string[];
+  /** Group names (live references), when known (preset picker). */
+  visibleToGroups?: string[];
 }
 
 interface Intent {
@@ -185,6 +191,7 @@ function applyAvailability(
     activities.slice(0, 20).map((a) => ({
       label: a.label.slice(0, 60),
       visibleTo: a.visibleTo ?? ("all" as const),
+      visibleToGroups: a.visibleToGroups,
       durationMinutes: a.durationMinutes,
     })),
   );
@@ -293,6 +300,35 @@ function resolveFriendName(
   };
 }
 
+const friendEntriesOf = (member: Member) =>
+  roster(member)
+    .filter((m) => m.memberId !== member.id)
+    .map((m) => ({ memberId: m.memberId, displayName: m.displayName }));
+
+/** One "to …" segment → memberIds. Group names win over friend names on an
+ * exact match ("close" the group beats a friend who happens to be named
+ * Close); friends still resolve by unique prefix. */
+function resolveAudienceSegment(
+  member: Member,
+  name: string,
+): { ok: true; ids: string[]; label: string; group: boolean } | { ok: false; error: string } {
+  const group = resolveGroup(member, name);
+  if (group) {
+    if (!group.memberIds.length)
+      return { ok: false, error: `Your group "${group.name}" has no members — /groups set adds some.` };
+    return { ok: true, ids: group.memberIds, label: group.name, group: true };
+  }
+  const friend = resolveFriendName(name, friendEntriesOf(member));
+  if (!friend.ok) {
+    const groupNames = groupsFor(member).map((g) => g.name);
+    return {
+      ok: false,
+      error: friend.error + (groupNames.length ? `\nYour groups: ${groupNames.join(", ")}` : ""),
+    };
+  }
+  return { ok: true, ids: [friend.memberId], label: friend.displayName, group: false };
+}
+
 // --- negotiation mode --------------------------------------------------------------
 // /negotiate runs the gated mutual-interest protocol right in the chat: the
 // user describes what they're after, the matching plane confirms overlaps
@@ -377,7 +413,8 @@ function commandOverview(member: Member | undefined): string {
 /presets — see or edit your call types
 /status — who's up for a call, plus open posts
 /clear — stop being available
-/post [minutes] [to <names>:] <text> — post a coordination opportunity (default: all friends, 4 h) — e.g. /post 90 to Ada, Bob: sauna?
+/post [minutes] [to <names>:] <text> — post a coordination opportunity (default: all friends, 4 h) — e.g. /post to close: sauna?
+/groups — named friend sets for /post audiences (e.g. "close")
 /code — your friend code to share
 /addfriend <code> — add a friend
 ${NEGOTIATE_HELP}
@@ -551,13 +588,13 @@ async function onMessage(msg: any): Promise<void> {
     return;
   }
 
-  // /post — a coordination opportunity to all friends, one friend, or a
-  // group, straight from chat.
+  // /post — a coordination opportunity to all friends, one friend, a named
+  // group ("/post to close: …"), or any mix, straight from chat.
   if (member && text.startsWith("/post")) {
     const usage =
       "Usage: /post [minutes] [to <names>:] <text>\n" +
       "e.g. /post climbing Saturday morning?\n" +
-      "/post to Ada: chess tonight?\n" +
+      "/post to close: chess tonight? (a group — /groups manages them)\n" +
       "/post 90 to Ada, Bob: sauna in a bit? (names comma-separated, colon after)";
     const { minutes, toNames, text: body } = parsePostArgs(text.slice(5));
     if (!body) {
@@ -566,23 +603,27 @@ async function onMessage(msg: any): Promise<void> {
     }
     let audience: "all" | string[] = "all";
     const audienceNames: string[] = [];
-    if (toNames) {
-      const friendEntries = roster(member)
-        .filter((m) => m.memberId !== member.id)
-        .map((m) => ({ memberId: m.memberId, displayName: m.displayName }));
-      const ids: string[] = [];
-      for (const name of toNames) {
-        const match = resolveFriendName(name, friendEntries);
+    let audienceLabel: string | undefined;
+    // "to all:" / "to everyone:" is just the default spelled out.
+    const names = toNames?.filter((n) => !["all", "everyone"].includes(n.toLowerCase()));
+    if (names?.length) {
+      const ids = new Set<string>();
+      let groupCount = 0;
+      for (const name of names) {
+        const match = resolveAudienceSegment(member, name);
         if (!match.ok) {
           await dm(chatId, `${match.error}\n\n${usage}`);
           return;
         }
-        ids.push(match.memberId);
-        audienceNames.push(match.displayName);
+        for (const id of match.ids) ids.add(id);
+        audienceNames.push(match.label);
+        if (match.group) groupCount++;
       }
-      audience = ids;
+      audience = [...ids];
+      // A single pure group keeps its name on the post ("to close").
+      if (groupCount === 1 && names.length === 1) audienceLabel = audienceNames[0];
     }
-    const result = postOpportunity(member, body, audience, minutes);
+    const result = postOpportunity(member, body, audience, minutes, audienceLabel);
     if (!result.ok) {
       await dm(
         chatId,
@@ -597,11 +638,15 @@ async function onMessage(msg: any): Promise<void> {
     const mins = Math.round(
       (new Date(result.opportunity.expiresAt).getTime() - Date.now()) / 60_000,
     );
+    const audText =
+      audience === "all"
+        ? "all your friends"
+        : audienceLabel
+          ? `${audienceLabel} (${audience.length} friend${audience.length === 1 ? "" : "s"})`
+          : [...new Set(audienceNames)].join(", ");
     await dm(
       chatId,
-      `📣 Posted to ${
-        audience === "all" ? "all your friends" : [...new Set(audienceNames)].join(", ")
-      } (stands for ${fmtMins(mins)}): "${result.opportunity.text}"`,
+      `📣 Posted to ${audText} (stands for ${fmtMins(mins)}): "${result.opportunity.text}"`,
     );
     return;
   }
@@ -673,6 +718,73 @@ async function onMessage(msg: any): Promise<void> {
         member.presets ? "" : "\n(These are the defaults — edit them and they become yours.)"
       }`,
     );
+    return;
+  }
+
+  // /groups — named friend sets for /post audiences. Shared with the
+  // overlay's settings editor (same server-side list, live-synced).
+  if (member && text.startsWith("/groups")) {
+    const [, sub, groupName, ...restArgs] = text.split(/\s+/);
+    const list = () => {
+      const groups = groupsFor(member);
+      if (!groups.length) return "(no groups yet)";
+      const friendEntries = friendEntriesOf(member);
+      const nameOf = (id: string) =>
+        friendEntries.find((f) => f.memberId === id)?.displayName ?? "?";
+      return groups
+        .map((g) => `• ${g.name} — ${g.memberIds.map(nameOf).join(", ") || "(empty)"}`)
+        .join("\n");
+    };
+    const usage =
+      "/groups — list your groups\n" +
+      "/groups set <name> <friend names, comma-separated> — create or replace one\n" +
+      "  e.g. /groups set close Ada, Bob\n" +
+      "/groups rm <name> — delete one\n" +
+      'Post to one with: /post to close: <text> (group names: one word, no ","/":").';
+    if (sub === "set") {
+      const memberNames = restArgs
+        .join(" ")
+        .split(",")
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      if (!groupName || !memberNames.length) {
+        await dm(chatId, usage);
+        return;
+      }
+      const ids: string[] = [];
+      const resolved: string[] = [];
+      for (const n of memberNames) {
+        const match = resolveFriendName(n, friendEntriesOf(member));
+        if (!match.ok) {
+          await dm(chatId, match.error);
+          return;
+        }
+        ids.push(match.memberId);
+        resolved.push(match.displayName);
+      }
+      const result = setGroup(member, groupName, ids);
+      if (!result.ok) {
+        await dm(
+          chatId,
+          result.error === "too_many"
+            ? "You already have 20 groups — remove one first (/groups rm <name>)."
+            : 'That name won\'t work — one to 24 characters, no "," or ":", and not "all"/"everyone".',
+        );
+        return;
+      }
+      await dm(chatId, `Saved. Your groups:\n${list()}`);
+      return;
+    }
+    if (sub === "rm") {
+      if (!groupName) {
+        await dm(chatId, usage);
+        return;
+      }
+      const groups = removeGroup(member, groupName);
+      await dm(chatId, groups ? `Removed. Your groups:\n${list()}` : `No group called "${groupName}".`);
+      return;
+    }
+    await dm(chatId, `Your groups:\n${list()}\n\n${usage}`);
     return;
   }
 
@@ -762,6 +874,7 @@ async function onCallback(cb: any): Promise<void> {
           label: p.label,
           durationMinutes: p.durationMinutes,
           visibleTo: p.visibleTo,
+          visibleToGroups: p.visibleToGroups,
         })),
       );
       await answer();
@@ -810,6 +923,7 @@ export async function startTelegramBridge(): Promise<void> {
       { command: "status", description: "Who's up for a call, plus open posts" },
       { command: "clear", description: "Stop being available" },
       { command: "post", description: "Post a coordination opportunity to friends" },
+      { command: "groups", description: "Named friend sets to post to (e.g. close)" },
       { command: "code", description: "Your friend code to share" },
       { command: "addfriend", description: "Add a friend by their code" },
       { command: "negotiate", description: "Find mutual interests, disclosed only when mutual" },

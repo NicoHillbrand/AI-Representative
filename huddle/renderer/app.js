@@ -13,7 +13,12 @@ let selectedMins = 60;
 // Post composer state: audience + how long the post stands.
 let postAll = true;
 const postSelected = new Set(); // memberIds, when postAll is false
+let postGroup = null; // group name, when the selection came from a group untouched
 let postMins = 240;
+// Named friend groups — server-side (shared with Telegram), synced via the
+// roster payload and "groups" events.
+let myGroups = [];
+const openGroupPickers = new Set(); // group names with the member picker expanded
 let streamAbort = null;
 let backoffMs = 1000;
 let reconnectTimer = null;
@@ -77,9 +82,10 @@ function syncPresets() {
     api("/api/presence/presets", {
       method: "POST",
       body: JSON.stringify({
-        presets: cfg.activities.map(({ label, visibleTo, durationMinutes }) => ({
+        presets: cfg.activities.map(({ label, visibleTo, visibleToGroups, durationMinutes }) => ({
           label,
           visibleTo,
+          visibleToGroups,
           durationMinutes,
         })),
       }),
@@ -98,6 +104,7 @@ async function adoptPresets(presets) {
       id: prev?.id ?? crypto.randomUUID(),
       label: p.label,
       visibleTo: p.visibleTo,
+      ...(p.visibleToGroups?.length ? { visibleToGroups: p.visibleToGroups } : {}),
       durationMinutes: p.durationMinutes,
       selected: prev?.selected ?? false,
       ...(prev?.minutes ? { minutes: prev.minutes } : {}),
@@ -174,12 +181,25 @@ function toast(message, ms = 8000, action) {
 }
 
 // --- activities editor -------------------------------------------------------
+// Group names on an activity that still exist (deleted groups linger in the
+// stored list harmlessly — the server resolves them to nobody).
+const liveGroupNames = (a) =>
+  (a.visibleToGroups ?? []).filter((n) =>
+    myGroups.some((g) => g.name.toLowerCase() === n.toLowerCase()),
+  );
+
 function visChipText(a) {
   if (a.visibleTo === "all") return "everyone";
-  if (!a.visibleTo.length) return "nobody";
-  return a.visibleTo.length === 1
-    ? members.get(a.visibleTo[0])?.displayName ?? "1 friend"
-    : `${a.visibleTo.length} friends`;
+  const groups = liveGroupNames(a);
+  const parts = [];
+  if (groups.length) parts.push(groups.length === 1 ? groups[0] : `${groups.length} groups`);
+  if (a.visibleTo.length)
+    parts.push(
+      a.visibleTo.length === 1
+        ? members.get(a.visibleTo[0])?.displayName ?? "1 friend"
+        : `${a.visibleTo.length} friends`,
+    );
+  return parts.join(" + ") || "nobody";
 }
 
 /** Composer: tick what you're up for this session, each with its own time. */
@@ -291,6 +311,7 @@ function visPicker(a) {
   evCheck.checked = a.visibleTo === "all";
   evCheck.addEventListener("change", () => {
     a.visibleTo = evCheck.checked ? "all" : [];
+    if (evCheck.checked) delete a.visibleToGroups;
     persistActivities();
     renderActivityEditor();
   });
@@ -298,8 +319,30 @@ function visPicker(a) {
   box.append(everyone);
 
   if (a.visibleTo !== "all") {
+    // Groups first — a LIVE reference: whoever is in the group when someone
+    // looks, sees it (edit "close" later and visibility follows).
+    for (const g of myGroups) {
+      const row = document.createElement("label");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = (a.visibleToGroups ?? []).includes(g.name);
+      c.addEventListener("change", () => {
+        const rest = (a.visibleToGroups ?? []).filter((n) => n !== g.name);
+        a.visibleToGroups = c.checked ? [...rest, g.name] : rest;
+        if (!a.visibleToGroups.length) delete a.visibleToGroups;
+        persistActivities();
+        renderActivityEditor();
+      });
+      const name = document.createElement("span");
+      name.textContent = `${g.name} `;
+      const count = document.createElement("span");
+      count.className = "muted small";
+      count.textContent = `group · ${g.memberIds.length}`;
+      row.append(c, name, count);
+      box.append(row);
+    }
     const others = friends();
-    if (!others.length) {
+    if (!others.length && !myGroups.length) {
       const none = document.createElement("span");
       none.className = "muted";
       none.textContent = "no friends yet";
@@ -337,6 +380,7 @@ function addActivity() {
 // --- coordination opportunities ------------------------------------------------
 function oppAudienceText(o) {
   if (o.audience === "all") return "to everyone";
+  if (o.audienceLabel) return `to ${o.audienceLabel}`;
   if (!o.audience) return "";
   return o.audience.length === 1
     ? `to ${members.get(o.audience[0])?.displayName ?? "1 friend"}`
@@ -390,7 +434,9 @@ function renderOpps() {
   );
 }
 
-/** Composer: everyone, or tick specific friends (like a call type's visibility). */
+/** Composer: everyone, a saved group in one tap, or tick specific friends.
+ * A group chip pre-ticks its members; touching any checkbox afterwards turns
+ * the selection ad-hoc again (the post then says "N friends", not the name). */
 function renderPostAudience() {
   const box = $("post-audience");
   box.replaceChildren();
@@ -407,6 +453,30 @@ function renderPostAudience() {
   box.append(everyone);
 
   if (!postAll) {
+    if (myGroups.length) {
+      const chips = document.createElement("div");
+      chips.className = "chips group-chips";
+      for (const g of myGroups) {
+        const chip = document.createElement("button");
+        chip.className = `vis-chip${postGroup === g.name ? " limited" : ""}`;
+        chip.textContent = `${g.name} (${g.memberIds.length})`;
+        chip.title = g.memberIds.length
+          ? `Post to your "${g.name}" group`
+          : `"${g.name}" has no members yet (settings → Friend groups)`;
+        chip.addEventListener("click", () => {
+          if (postGroup === g.name) {
+            postGroup = null; // back to ad-hoc, keep the ticks
+          } else {
+            postGroup = g.name;
+            postSelected.clear();
+            for (const id of g.memberIds) postSelected.add(id);
+          }
+          renderPostAudience();
+        });
+        chips.append(chip);
+      }
+      box.append(chips);
+    }
     const others = friends();
     if (!others.length) {
       const none = document.createElement("span");
@@ -420,7 +490,9 @@ function renderPostAudience() {
       c.type = "checkbox";
       c.checked = postSelected.has(f.memberId);
       c.addEventListener("change", () => {
+        postGroup = null; // hand-edited → no longer exactly the group
         c.checked ? postSelected.add(f.memberId) : postSelected.delete(f.memberId);
+        renderPostAudience();
       });
       row.append(c, document.createTextNode(f.displayName));
       box.append(row);
@@ -583,9 +655,17 @@ async function connectStream() {
           for (const m of payload.members) members.set(m.memberId, m);
           opps.clear();
           for (const o of payload.opportunities ?? []) opps.set(o.id, o);
+          myGroups = payload.groups ?? [];
           if (payload.callLink) cfg.callLink = payload.callLink;
           render();
           renderActivityEditor(); // visibility pickers list friends from the roster
+          if (!$("settings").hidden) renderGroupsEditor();
+        } else if (event === "groups") {
+          // Edited elsewhere (Telegram /groups, another device) — or our echo.
+          myGroups = payload.groups ?? [];
+          if (!$("settings").hidden) renderGroupsEditor();
+          if (!$("post").hidden) renderPostAudience();
+          if (!$("manage").hidden) renderActivityEditor(); // vis pickers list groups
         } else if (event === "opportunity") {
           opps.set(payload.opportunity.id, payload.opportunity);
           render();
@@ -666,9 +746,10 @@ async function setAvailable(mins) {
   const note = $("self-note").value.trim();
   const activities = cfg.activities
     .filter((a) => a.selected)
-    .map(({ label, visibleTo, minutes, durationMinutes }) => ({
+    .map(({ label, visibleTo, visibleToGroups, minutes, durationMinutes }) => ({
       label,
       visibleTo,
+      visibleToGroups,
       minutes,
       durationMinutes,
     }));
@@ -744,8 +825,11 @@ function chosenPostMinutes() {
 async function sendPost() {
   const text = $("post-text").value.trim();
   if (!text) return toast("Write what you're proposing first.");
-  const audience = postAll ? "all" : [...postSelected];
-  if (audience !== "all" && !audience.length) return toast("Pick at least one friend to post to.");
+  // A group posts by NAME (the server resolves it and keeps the label on
+  // the post); a hand-picked set posts as ids.
+  const audience = postAll ? "all" : postGroup ? { group: postGroup } : [...postSelected];
+  if (Array.isArray(audience) && !audience.length)
+    return toast("Pick at least one friend to post to.");
   const res = await api("/api/presence/opportunities", {
     method: "POST",
     body: JSON.stringify({ text, audience, minutes: chosenPostMinutes() }),
@@ -757,7 +841,9 @@ async function sendPost() {
         ? "You already have 5 open posts — take one down first."
         : body.error === "too_fast"
           ? "Easy — you just posted. Give it a moment."
-          : "Couldn't post — are you online?",
+          : body.error === "empty_audience" || body.error === "unknown_group"
+            ? "That group is empty or gone — pick friends directly."
+            : "Couldn't post — are you online?",
     );
   }
   const { opportunity } = await res.json();
@@ -938,6 +1024,110 @@ function renderFriendsEditor() {
   );
 }
 
+/** Settings: named friend groups — one-tap post audiences, shared with the
+ * Telegram bot (/groups). The chip opens a member picker; edits save live. */
+function renderGroupsEditor() {
+  $("groups-editor").replaceChildren(
+    ...myGroups.map((g) => {
+      const row = document.createElement("div");
+      row.className = "act-row";
+      const main = document.createElement("div");
+      main.className = "act-main";
+
+      const label = document.createElement("label");
+      label.append(document.createTextNode(g.name));
+
+      const pick = document.createElement("button");
+      pick.className = `vis-chip${g.memberIds.length ? " limited" : ""}`;
+      pick.textContent = `${g.memberIds.length} friend${g.memberIds.length === 1 ? "" : "s"}`;
+      pick.title = "Who's in this group";
+      pick.addEventListener("click", () => {
+        openGroupPickers.has(g.name) ? openGroupPickers.delete(g.name) : openGroupPickers.add(g.name);
+        renderGroupsEditor();
+      });
+
+      const del = document.createElement("button");
+      del.className = "act-del";
+      del.textContent = "×";
+      del.title = `Delete the "${g.name}" group (friends stay friends)`;
+      del.addEventListener("click", async () => {
+        const res = await api(`/api/presence/groups/${encodeURIComponent(g.name)}`, {
+          method: "DELETE",
+        });
+        if (!res.ok) return toast("Couldn't delete that group.");
+        myGroups = (await res.json()).groups;
+        openGroupPickers.delete(g.name);
+        renderGroupsEditor();
+      });
+
+      main.append(label, pick, del);
+      row.append(main);
+      if (openGroupPickers.has(g.name)) row.append(groupPicker(g));
+      return row;
+    }),
+  );
+}
+
+function groupPicker(g) {
+  const box = document.createElement("div");
+  box.className = "vis-picker";
+  const others = friends();
+  if (!others.length) {
+    const none = document.createElement("span");
+    none.className = "muted";
+    none.textContent = "no friends yet";
+    box.append(none);
+  }
+  for (const f of others) {
+    const row = document.createElement("label");
+    const c = document.createElement("input");
+    c.type = "checkbox";
+    c.checked = g.memberIds.includes(f.memberId);
+    c.addEventListener("change", () => {
+      const ids = c.checked
+        ? [...g.memberIds, f.memberId]
+        : g.memberIds.filter((id) => id !== f.memberId);
+      saveGroup(g.name, ids);
+    });
+    row.append(c, document.createTextNode(f.displayName));
+    box.append(row);
+  }
+  return box;
+}
+
+async function saveGroup(name, memberIds) {
+  const res = await api("/api/presence/groups", {
+    method: "POST",
+    body: JSON.stringify({ name, memberIds }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return toast(
+      body.error === "bad_name"
+        ? 'Group names: up to 24 characters, no "," or ":", not "all"/"everyone".'
+        : body.error === "too_many"
+          ? "You already have 20 groups — delete one first."
+          : "Couldn't save that group.",
+    );
+  }
+  myGroups = (await res.json()).groups;
+  renderGroupsEditor();
+}
+
+async function addGroup() {
+  const input = $("group-add-input");
+  const name = input.value.trim();
+  if (!name) return;
+  await saveGroup(name, []);
+  input.value = "";
+  // Open the new group's picker right away so members get ticked in.
+  const created = myGroups.find((g) => g.name.toLowerCase() === name.toLowerCase());
+  if (created) {
+    openGroupPickers.add(created.name);
+    renderGroupsEditor();
+  }
+}
+
 async function addFriend() {
   const input = $("friend-add-input");
   const code = input.value.trim();
@@ -963,6 +1153,7 @@ async function addFriend() {
 async function openSettings() {
   renderActivityEditor();
   renderFriendsEditor();
+  renderGroupsEditor();
   refreshFriendCode();
   $("shortcut-btn").textContent = await window.huddle.getShortcut();
   $("set-call-link").value = cfg.myCallLink || "";
@@ -1107,6 +1298,8 @@ $("friend-code-rotate").addEventListener("click", async () => {
 });
 $("friend-add-btn").addEventListener("click", addFriend);
 $("friend-add-input").addEventListener("keydown", (e) => e.key === "Enter" && addFriend());
+$("group-add-btn").addEventListener("click", addGroup);
+$("group-add-input").addEventListener("keydown", (e) => e.key === "Enter" && addGroup());
 $("telegram-btn").addEventListener("click", toggleTelegram);
 $("set-call-link").addEventListener("change", async (e) => {
   const v = e.target.value.trim();
