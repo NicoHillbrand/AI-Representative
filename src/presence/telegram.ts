@@ -3,6 +3,8 @@ import { Type } from "@google/genai";
 import { config } from "../config.js";
 import { extractJson, type ChatMessage } from "../llm.js";
 import { respond } from "../representative.js";
+import { createSession, type Session } from "../negotiation/store.js";
+import { processTurn, summarize } from "../negotiation/negotiate.js";
 import {
   acceptCall,
   hasLiveSubscriber,
@@ -117,6 +119,43 @@ function applyAvailability(member: Member, mins: number | undefined, activities:
   }. Your friends' overlays just updated.`;
 }
 
+// --- negotiation mode --------------------------------------------------------------
+// /negotiate runs the gated mutual-interest protocol right in the chat: the
+// user describes what they're after, the matching plane confirms overlaps
+// bilaterally, /done delivers the summary. Uses the same engine as the
+// public API, so all two-plane guarantees hold.
+const negotiations = new Map<number, Session>(); // telegram chatId -> session
+
+async function negotiationTurn(chatId: number, session: Session, text: string): Promise<void> {
+  await tg("sendChatAction", { chat_id: chatId, action: "typing" });
+  try {
+    const result = await processTurn(session, text.slice(0, 8000));
+    const banner = result.newMatches.length
+      ? result.newMatches.map((m) => `✅ Mutual interest confirmed: ${m.label}`).join("\n") + "\n\n"
+      : "";
+    await dm(chatId, `${banner}${result.reply}\n\n(say more, or /done for the summary)`);
+  } catch (err) {
+    console.error("telegram negotiation turn failed", err);
+    await dm(chatId, "That turn failed — try again in a moment, or /done to wrap up.");
+  }
+}
+
+async function endNegotiation(chatId: number, session: Session): Promise<void> {
+  negotiations.delete(chatId);
+  await tg("sendChatAction", { chat_id: chatId, action: "typing" });
+  try {
+    const summary = await summarize(session);
+    const matches = session.confirmedMatches.length
+      ? "\n\nConfirmed mutual interests:\n" +
+        session.confirmedMatches.map((m) => `✅ ${m.label}`).join("\n")
+      : "\n\nNo mutual interests were confirmed this time.";
+    await dm(chatId, `${summary}${matches}`);
+  } catch (err) {
+    console.error("telegram negotiation summary failed", err);
+    await dm(chatId, "Couldn't produce the summary, but the session is closed.");
+  }
+}
+
 // --- representative chat fallback ------------------------------------------------
 const chatHistories = new Map<number, ChatMessage[]>(); // telegram chatId -> history
 const HISTORY_MAX = 20;
@@ -172,12 +211,31 @@ async function onMessage(msg: any): Promise<void> {
   }
 
   if (text === "/help") {
+    const negotiateHelp =
+      "/negotiate — tell me what you're looking for; mutual interests with my principal get confirmed bilaterally, /done gives you the summary";
     await dm(
       chatId,
       member
-        ? "/up [minutes] [note] — go available (or just say it in plain words)\n/status — who's up for a call\n/clear — stop being available\n/unlink — disconnect Telegram\nAnything else: chat with the representative."
-        : "Ask me anything about my principal. Huddle users: link from the overlay (settings → Telegram).",
+        ? `/up [minutes] [note] — go available (or just say it in plain words)\n/status — who's up for a call\n/clear — stop being available\n${negotiateHelp}\n/unlink — disconnect Telegram\nAnything else: chat with the representative.`
+        : `Ask me anything about my principal.\n${negotiateHelp}\nHuddle users: link from the overlay (settings → Telegram).`,
     );
+    return;
+  }
+
+  if (text === "/negotiate") {
+    const session = createSession(`telegram:${msg.from?.first_name ?? "counterpart"}`);
+    negotiations.set(chatId, session);
+    await dm(
+      chatId,
+      "Negotiation session open. Tell me what you (or your principal) are interested in — collaborations, exchanges, projects. Interests are only disclosed when they're mutual: if you assert something my principal is also privately interested in, we both find out; if not, nothing is revealed. /done when finished.",
+    );
+    return;
+  }
+
+  if (text === "/done") {
+    const session = negotiations.get(chatId);
+    if (session) await endNegotiation(chatId, session);
+    else await dm(chatId, "No negotiation running — /negotiate starts one.");
     return;
   }
 
@@ -219,6 +277,13 @@ async function onMessage(msg: any): Promise<void> {
       chatId,
       applyAvailability(member, Number.isFinite(mins) ? mins : undefined, [], rest.join(" ") || undefined),
     );
+    return;
+  }
+
+  // An open negotiation session claims all free text until /done.
+  const negotiation = negotiations.get(chatId);
+  if (negotiation) {
+    await negotiationTurn(chatId, negotiation, text);
     return;
   }
 
