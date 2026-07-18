@@ -730,11 +730,6 @@ $("self-on-btn").addEventListener("click", () => setAvailable(chosenMinutes()));
 $("self-extend-btn").addEventListener("click", () => setAvailable(chosenMinutes()));
 $("self-clear-btn").addEventListener("click", clearSignal);
 
-$("pin-btn").addEventListener("click", async () => {
-  const pinned = await window.huddle.setPinned($("pin-btn").classList.contains("off"));
-  $("pin-btn").classList.toggle("off", !pinned);
-  toast(pinned ? "Pinned — stays until you hide it (Esc / shortcut)." : "Unpinned — hides when you click elsewhere.", 4_000);
-});
 $("settings-btn").addEventListener("click", () => {
   if (cfg.deviceToken) openSettings();
 });
@@ -794,7 +789,6 @@ window.huddle.onQuickClear(() => cfg.deviceToken && clearSignal());
 // --- boot ----------------------------------------------------------------------------------
 (async () => {
   cfg = await window.huddle.storeGet();
-  window.huddle.getPinned().then((p) => $("pin-btn").classList.toggle("off", !p));
   if (!Array.isArray(cfg.activities)) {
     cfg = await window.huddle.storeSet({
       activities: DEFAULT_ACTIVITIES.map((label) => ({

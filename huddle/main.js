@@ -60,11 +60,8 @@ function createWindow() {
     },
   });
   win.loadFile(join(__dirname, "renderer", "index.html"));
-  // Pinned (the default) = stays on screen until hidden via Esc / shortcut /
-  // tray. Unpinned = overlay etiquette, clicking away dismisses it.
-  win.on("blur", () => {
-    if (!isPinned()) win?.hide();
-  });
+  // The overlay stays on screen deliberately — hiding is always an explicit
+  // act (Esc, the global shortcut, or the tray).
   win.on("closed", () => (win = null));
 }
 
@@ -112,12 +109,6 @@ function createTray() {
 ipcMain.handle("store-get", () => storeGet());
 ipcMain.handle("store-set", (_e, patch) => storeSet(patch));
 ipcMain.on("hide-window", () => win?.hide());
-const isPinned = () => storeGet().pinned !== false; // default: pinned
-ipcMain.handle("get-pinned", () => isPinned());
-ipcMain.handle("set-pinned", (_e, on) => {
-  storeSet({ pinned: !!on });
-  return isPinned();
-});
 ipcMain.on("open-external", (_e, url) => {
   if (typeof url === "string" && /^https?:\/\//.test(url)) shell.openExternal(url);
 });
