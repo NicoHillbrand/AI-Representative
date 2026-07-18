@@ -44,6 +44,24 @@ dev/start/typecheck scripts create it automatically from
 `content/interests.example.ts`; edit the created copy. When deploying, copy
 your real `interests.ts` to the server by hand (it won't arrive via git).
 
+### Private context (`content/private.ts`, also gitignored)
+
+Context for the **chat** representative that stays out of git, bootstrapped
+from `content/private.example.ts` the same way:
+
+- `PRIVATE_CONTEXT` — inline text spliced into the system prompt (personal
+  details, standing instructions, secrets with reveal conditions).
+- `PRIVATE_SOURCES` — pointers to files elsewhere on the machine (other
+  repos' READMEs, project notes). Each file is re-read whenever it changes on
+  disk, so the representative stays current without a restart. Missing files
+  are skipped with a warning.
+
+Unlike hidden interests (never in the chat model's context, structurally
+unleakable), private context **is** in the chat model's context and is guarded
+only by instructions — a determined jailbreak can extract it. Use it only where
+instruction-level secrecy is enough. Deploying: copy `private.ts` up by hand,
+and make sure any `PRIVATE_SOURCES` paths exist on the server.
+
 ## Huddle (the overlay)
 
 An Electron tray overlay in [`huddle/`](huddle/README.md); the presence backend
@@ -116,7 +134,7 @@ dedicated user, secrets in `/etc` with mode 600:
 ```bash
 sudo git clone https://github.com/NicoHillbrand/AI-Representative.git /opt/ai-representative
 sudo useradd --system --home /opt/ai-representative --shell /usr/sbin/nologin airep
-# copy your REAL content/interests.ts up by hand (it's gitignored)
+# copy your REAL content/interests.ts + content/private.ts up by hand (gitignored)
 cd /opt/ai-representative && sudo -u airep npm install && sudo chown -R airep:airep .
 
 sudo mkdir -p /etc/ai-representative
