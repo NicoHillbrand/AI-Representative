@@ -45,7 +45,8 @@ your friends see nothing of you.
 | Call a friend | `call` on an available friend's row sends a request; **they must accept** — then the room opens for both, with a **Copy link** button on the toast (e.g. to reshare over Messenger). The room is your own link if you set one (settings → My call link, e.g. a Google Meet), otherwise a fresh room from the server's `HUDDLE_CALL_LINK` template (`{room}` replaced per call; default Jitsi). Requests expire after 2 min and are single-use. |
 | Quick-set from tray | right-click tray → "Available for 60 min" |
 | Add / remove friends | settings → **My friend code** (click to copy, rotatable — rotation doesn't affect existing friends) to be added; paste a friend's code under **Friends** to add them. Removing a friend (×) is mutual — you disappear from each other's rosters. |
-| Settings (⚙ in header) | friend code + friends list, call type presets, shortcut recorder, **my call link** (your Meet/Zoom/... room, sent with your call requests), quiet pings (no sound), friend-available notifications, start at login, sign out |
+| Telegram (optional) | settings → **Telegram notifications** → Link: pings, call requests (with an inline **Accept** button) and friend-available updates reach you on Telegram whenever your overlay isn't running. Message the bot `/up 60 coworking` — or plain words like "up for a call about X in the next hour" — to go available from your phone. Requires the server to set `TELEGRAM_BOT_TOKEN`. |
+| Settings (⚙ in header) | friend code + friends list, Telegram link, call type presets, shortcut recorder, **my call link** (your Meet/Zoom/... room, sent with your call requests), quiet pings (no sound), friend-available notifications, start at login, sign out |
 
 True Google Meet room creation would require Google OAuth per user (Calendar
 API) — the `{room}` template keeps that swappable later without app changes.

@@ -39,6 +39,10 @@ export const config = {
   // static group link. Jitsi needs no accounts; swap for a Meet-generating
   // integration later if desired.
   huddleCallLink: process.env.HUDDLE_CALL_LINK || "https://meet.jit.si/huddle-{room}",
+  // Optional Telegram bot (from @BotFather). Powers out-of-overlay Huddle
+  // notifications + availability-by-message, and representative chat for
+  // anyone who messages the bot. Empty = bridge disabled.
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
 };
 
 /** The whole public strategy doc, loaded once at startup and stuffed into the system prompt. */

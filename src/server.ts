@@ -21,9 +21,12 @@ import {
   addFriendByCode,
   unfriend,
   rotateFriendCode,
+  createTelegramLinkCode,
+  unlinkTelegram,
   type Member,
   type Activity,
 } from "./presence/store.js";
+import { startTelegramBridge, telegramEnabled, telegramBotUsername } from "./presence/telegram.js";
 import { randomBytes } from "node:crypto";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -200,7 +203,35 @@ app.post("/api/presence/pair", (req, res) => {
 app.get("/api/presence/me", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
-  res.json({ memberId: member.id, displayName: member.displayName, friendCode: member.friendCode });
+  res.json({
+    memberId: member.id,
+    displayName: member.displayName,
+    friendCode: member.friendCode,
+    telegram: {
+      available: telegramEnabled(),
+      linked: !!member.telegramChatId,
+      botUsername: telegramBotUsername() ?? null,
+    },
+  });
+});
+
+// Telegram linking: overlay fetches a one-time deep link, user taps Start.
+app.post("/api/presence/telegram/link-code", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  if (!telegramEnabled() || !telegramBotUsername()) {
+    res.status(503).json({ error: "unavailable", message: "This server has no Telegram bot configured." });
+    return;
+  }
+  const code = createTelegramLinkCode(member);
+  res.json({ code, url: `https://t.me/${telegramBotUsername()}?start=${code}` });
+});
+
+app.delete("/api/presence/telegram", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  unlinkTelegram(member);
+  res.sendStatus(204);
 });
 
 app.post("/api/presence/me/rotate-code", (req, res) => {
@@ -375,3 +406,6 @@ app.listen(config.port, () => {
   console.log(`AI Representative listening on http://localhost:${config.port}`);
   console.log(`Model: ${config.model}`);
 });
+
+// Fire-and-forget: long-polls Telegram if TELEGRAM_BOT_TOKEN is set.
+void startTelegramBridge();

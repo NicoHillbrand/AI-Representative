@@ -60,6 +60,11 @@ An Electron tray overlay in [`huddle/`](huddle/README.md); the presence backend
 - **Nothing sensitive persists server-side** except who's paired and the friend
   graph (`data/presence-members.json`, gitignored). Availability signals are
   in-memory and expire on their own.
+- **Telegram bridge (optional)** — set `TELEGRAM_BOT_TOKEN` and one bot serves
+  both worlds: anyone can chat with the representative on Telegram, and Huddle
+  members who link it (overlay settings) get notifications there when their
+  overlay is closed — including accepting call requests — and can go available
+  by messaging the bot in plain language ("up for coworking the next hour").
 
 To run it: `cd huddle && npm install && npm start`, then enter the server URL
 and the friend code of whoever invited you. Full details in

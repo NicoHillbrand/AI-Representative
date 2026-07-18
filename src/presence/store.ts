@@ -48,8 +48,31 @@ export interface Member {
   friendCode: string;
   /** Mutual by construction: a is in b.friends iff b is in a.friends. */
   friends: Set<string>;
+  /** Linked Telegram chat for out-of-overlay notifications (optional). */
+  telegramChatId?: number;
   signal?: Signal;
 }
+
+/** Events another channel (e.g. the Telegram bridge) may want to relay.
+ * `live` flags say whether the affected member got it via a connected
+ * overlay — relays typically only fire when they didn't. */
+export type PresenceEvent =
+  | { type: "ping"; from: Member; to: Member; live: boolean }
+  | { type: "call-request"; from: Member; to: Member; live: boolean }
+  | { type: "call-start"; requester: Member; accepter: Member; url: string; requesterLive: boolean; accepterLive: boolean }
+  | { type: "went-available"; member: Member; friend: Member; live: boolean };
+
+let eventSink: ((e: PresenceEvent) => void) | undefined;
+export function setEventSink(fn: (e: PresenceEvent) => void): void {
+  eventSink = fn;
+}
+const emit = (e: PresenceEvent) => {
+  try {
+    eventSink?.(e);
+  } catch (err) {
+    console.error("presence event sink failed", err);
+  }
+};
 
 /** What a specific viewer sees for one member. Deliberately no
  * online/connected state — this is an intent signal, not a presence tracker
@@ -81,6 +104,7 @@ function load(): void {
         tokens: string[];
         friendCode?: string;
         friends?: string[];
+        telegramChatId?: number;
       }[];
     };
     for (const m of raw.members ?? []) {
@@ -91,6 +115,7 @@ function load(): void {
         // Pre-friend-graph files lack these: mint a code, start friendless.
         friendCode: m.friendCode || generateCode(),
         friends: new Set(m.friends ?? []),
+        telegramChatId: m.telegramChatId,
       };
       members.set(member.id, member);
       for (const t of member.tokens) byToken.set(t, member);
@@ -109,6 +134,7 @@ function save(): void {
       tokens: [...m.tokens],
       friendCode: m.friendCode,
       friends: [...m.friends],
+      ...(m.telegramChatId ? { telegramChatId: m.telegramChatId } : {}),
     })),
   };
   writeFileSync(dataFile, JSON.stringify(raw, null, 2));
@@ -218,6 +244,46 @@ export function rotateFriendCode(me: Member): string {
   return me.friendCode;
 }
 
+// --- Telegram linking -----------------------------------------------------------
+// Overlay asks for a one-time code → user opens t.me/<bot>?start=<code> → the
+// bot redeems it, binding that Telegram chat to the member.
+const tgLinkCodes = new Map<string, { memberId: string; expiresAt: number }>();
+const TG_LINK_TTL = 10 * 60_000;
+
+export function createTelegramLinkCode(member: Member): string {
+  const code = generateCode().replace("-", "") + generateCode().replace("-", "");
+  tgLinkCodes.set(code, { memberId: member.id, expiresAt: Date.now() + TG_LINK_TTL });
+  return code;
+}
+
+export function redeemTelegramLinkCode(code: string, chatId: number): Member | undefined {
+  const entry = tgLinkCodes.get(code.trim());
+  tgLinkCodes.delete(code.trim());
+  if (!entry || Date.now() > entry.expiresAt) return undefined;
+  const member = members.get(entry.memberId);
+  if (!member) return undefined;
+  // One chat ↔ one member: unbind the chat elsewhere first.
+  for (const m of members.values()) if (m.telegramChatId === chatId) m.telegramChatId = undefined;
+  member.telegramChatId = chatId;
+  save();
+  return member;
+}
+
+export function unlinkTelegram(member: Member): void {
+  member.telegramChatId = undefined;
+  save();
+}
+
+export function memberByTelegramChat(chatId: number): Member | undefined {
+  return [...members.values()].find((m) => m.telegramChatId === chatId);
+}
+
+/** Does this member have any overlay connected right now? */
+export function hasLiveSubscriber(memberId: string): boolean {
+  for (const sub of subscribers) if (sub.viewerId === memberId) return true;
+  return false;
+}
+
 // --- signals ---------------------------------------------------------------------
 function entryFor(m: Member, viewerId: string): RosterEntry {
   const now = Date.now();
@@ -264,6 +330,7 @@ export function setSignal(
     visibleTo: a.visibleTo,
     expiresAt: now + clampMins(a.minutes ?? windowMins) * 60_000,
   }));
+  const wasActive = !!member.signal && now < member.signal.expiresAt;
   member.signal = {
     setAt: now,
     // Available at least the chosen window, and long enough to cover every
@@ -273,6 +340,12 @@ export function setSignal(
     activities: stored,
   };
   broadcastMember(member);
+  if (!wasActive) {
+    for (const fid of member.friends) {
+      const friend = members.get(fid);
+      if (friend) emit({ type: "went-available", member, friend, live: hasLiveSubscriber(fid) });
+    }
+  }
   return entryFor(member, member.id);
 }
 
@@ -367,8 +440,14 @@ function sendDirect(
   return { ok: true, delivered };
 }
 
-export const pingMember = (from: Member, toMemberId: string) =>
-  sendDirect("ping-from", from, toMemberId, {});
+export const pingMember = (from: Member, toMemberId: string) => {
+  const result = sendDirect("ping-from", from, toMemberId, {});
+  if (result.ok) {
+    const to = members.get(toMemberId);
+    if (to) emit({ type: "ping", from, to, live: result.delivered });
+  }
+  return result;
+};
 
 // --- call handshake ------------------------------------------------------------
 // A call only happens by mutual consent: A requests (optionally attaching
@@ -380,8 +459,11 @@ const CALL_REQUEST_TTL = 2 * 60_000;
 
 export function requestCall(from: Member, toMemberId: string, link?: string) {
   const result = sendDirect("call-request", from, toMemberId, {});
-  if (result.ok)
+  if (result.ok) {
     pendingCalls.set(`${from.id}>${toMemberId}`, { expiresAt: Date.now() + CALL_REQUEST_TTL, link });
+    const to = members.get(toMemberId);
+    if (to) emit({ type: "call-request", from, to, live: result.delivered });
+  }
   return result;
 }
 
@@ -403,6 +485,7 @@ export function acceptCall(
   const requester = members.get(fromMemberId);
   if (!requester) return { ok: false, error: "unknown_member" };
   let delivered = false;
+  let accepterLive = false;
   for (const sub of subscribers) {
     const isRequester = sub.viewerId === requester.id;
     const isAccepter = sub.viewerId === accepter.id;
@@ -414,10 +497,12 @@ export function acceptCall(
         url,
       });
       if (isRequester) delivered = true;
+      if (isAccepter) accepterLive = true;
     } catch {
       subscribers.delete(sub);
     }
   }
+  emit({ type: "call-start", requester, accepter, url, requesterLive: delivered, accepterLive });
   return { ok: true, delivered, url };
 }
 

@@ -587,10 +587,38 @@ async function join() {
 // --- settings ---------------------------------------------------------------------------
 let recordingShortcut = false;
 
+let telegramLinked = false;
+
 async function refreshFriendCode() {
   $("friend-code").textContent = "…";
   const res = await api("/api/presence/me").catch(() => null);
-  $("friend-code").textContent = res?.ok ? (await res.json()).friendCode : "offline";
+  if (!res?.ok) {
+    $("friend-code").textContent = "offline";
+    $("telegram-setting").hidden = true;
+    return;
+  }
+  const me = await res.json();
+  $("friend-code").textContent = me.friendCode;
+  // Telegram section only exists when the server has a bot configured.
+  $("telegram-setting").hidden = !me.telegram?.available;
+  telegramLinked = !!me.telegram?.linked;
+  $("telegram-btn").textContent = telegramLinked ? "Linked ✓ — unlink" : "Link Telegram…";
+}
+
+async function toggleTelegram() {
+  if (telegramLinked) {
+    const res = await api("/api/presence/telegram", { method: "DELETE" });
+    if (!res.ok) return toast("Couldn't unlink.");
+    telegramLinked = false;
+    $("telegram-btn").textContent = "Link Telegram…";
+    toast("Telegram unlinked.");
+    return;
+  }
+  const res = await api("/api/presence/telegram/link-code", { method: "POST" });
+  if (!res.ok) return toast("The server has no Telegram bot configured.");
+  const { url } = await res.json();
+  window.huddle.openExternal(url);
+  toast("Telegram opened — press Start there, then reopen settings.", 12_000);
 }
 
 /** Settings: your friends, each removable (removal is mutual). */
@@ -758,6 +786,7 @@ $("friend-code-rotate").addEventListener("click", async () => {
 });
 $("friend-add-btn").addEventListener("click", addFriend);
 $("friend-add-input").addEventListener("keydown", (e) => e.key === "Enter" && addFriend());
+$("telegram-btn").addEventListener("click", toggleTelegram);
 $("set-call-link").addEventListener("change", async (e) => {
   const v = e.target.value.trim();
   if (v && !/^https:\/\/\S+$/.test(v)) {
