@@ -16,6 +16,7 @@ const openPickers = new Set(); // activity ids with the visibility picker expand
 
 const DEFAULT_ACTIVITIES = [
   "get unstuck on a task",
+  "help me escape a local minimum",
   "meditation",
   "coworking",
   "body doubling",
