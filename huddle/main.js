@@ -62,17 +62,21 @@ function createWindow() {
   win.loadFile(join(__dirname, "renderer", "index.html"));
   // The overlay stays on screen deliberately — hiding is always an explicit
   // act (Esc, the global shortcut, or the tray).
+  // Minimizing shows a taskbar tile (see "minimize-window"); once restored,
+  // go back to being a tray-only floater.
+  win.on("restore", () => win?.setSkipTaskbar(true));
   win.on("closed", () => (win = null));
 }
 
 function showWindow() {
   if (!win) createWindow();
+  if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
 }
 
 function toggleWindow() {
-  if (win?.isVisible()) win.hide();
+  if (win?.isVisible() && !win.isMinimized()) win.hide();
   else showWindow();
 }
 
@@ -109,6 +113,11 @@ function createTray() {
 ipcMain.handle("store-get", () => storeGet());
 ipcMain.handle("store-set", (_e, patch) => storeSet(patch));
 ipcMain.on("hide-window", () => win?.hide());
+ipcMain.on("minimize-window", () => {
+  if (!win) return;
+  win.setSkipTaskbar(false); // taskbar tile while minimized, so it's findable
+  win.minimize();
+});
 ipcMain.on("quit-app", () => app.quit());
 // The renderer reports its natural content height so the window hugs the
 // content (no dead space under a short friends list).

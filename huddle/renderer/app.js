@@ -808,7 +808,7 @@ $("self-on-btn").addEventListener("click", () => setAvailable(chosenMinutes()));
 $("self-extend-btn").addEventListener("click", () => setAvailable(chosenMinutes()));
 $("self-clear-btn").addEventListener("click", clearSignal);
 
-$("min-btn").addEventListener("click", () => window.huddle.hideWindow());
+$("min-btn").addEventListener("click", () => window.huddle.minimizeWindow());
 $("close-btn").addEventListener("click", () => window.huddle.quitApp());
 $("settings-btn").addEventListener("click", () => {
   if (cfg.deviceToken) openSettings();
