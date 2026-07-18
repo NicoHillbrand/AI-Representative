@@ -103,6 +103,7 @@ button.mono { font-family: ui-monospace, Consolas, monospace; }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
 .center { text-align: center; margin-top: 24px; }
+#pin-btn.off { opacity: 0.35; }
 .row { display: flex; gap: 8px; margin-top: 8px; }
 .row button { flex: 1; }
 .row input { flex: 2; min-width: 0; }

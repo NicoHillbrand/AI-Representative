@@ -38,7 +38,7 @@ your friends see nothing of you.
 
 | Action | How |
 |---|---|
-| Show / hide | `Ctrl/Cmd+Shift+Space` (rebindable in settings), tray click, `Esc` hides |
+| Show / hide | `Ctrl/Cmd+Shift+Space` (rebindable in settings), tray click, `Esc` hides. **📌 in the header** (default on) keeps the overlay on screen; unpin it to auto-hide when you click another app. |
 | Go available | `+` in the header opens the composer: 30/60/90 min or custom (15–180), tick call types — each with its own optional duration (chips read "30min coworking" and count down) — plus an optional note |
 | Call type presets | click "Me (inactive)" (or settings → Call type presets…): add/remove and set per-preset visibility (everyone / specific friends). Defaults: get unstuck on a task, meditation, coworking, body doubling |
 | Ping a friend | 👋 on their row — toast + notification on their overlay (throttled; tells you if they're offline) |
