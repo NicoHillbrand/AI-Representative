@@ -13,6 +13,7 @@
       <span class="brand">huddle</span>
       <span class="header-right">
         <span id="conn-dot" class="dot off" title="Disconnected"></span>
+        <button id="post-btn" class="ghost" title="Post a coordination opportunity">📣</button>
         <button id="interests-btn" class="ghost" title="Session interests">+</button>
         <button id="settings-btn" class="ghost" title="Settings">⚙</button>
         <button id="min-btn" class="ghost" title="Minimize to the taskbar">–</button>
@@ -60,6 +61,9 @@
         </div>
       </div>
 
+      <div class="list-head" id="opps-head" hidden>opportunities</div>
+      <div id="opps" hidden></div>
+
       <div class="list-head">friends</div>
       <div id="roster"></div>
       <p id="roster-empty" class="muted center" hidden>Nobody's around right now.<br/>Be the first.</p>
@@ -78,6 +82,23 @@
       <input id="self-note" type="text" maxlength="80" placeholder="note (optional)" />
       <button id="self-on-btn" class="primary big">I'm up for a call</button>
       <button id="interests-back" class="ghost">back</button>
+    </section>
+
+    <!-- Post composer (📣 in the header): text, audience, how long it stands. -->
+    <section id="post" hidden>
+      <h1>Post an opportunity</h1>
+      <input id="post-text" type="text" maxlength="200" placeholder="e.g. climbing Saturday morning?" />
+      <div class="acts-head">who sees it</div>
+      <div id="post-audience" class="vis-picker"></div>
+      <div class="acts-head">stands for</div>
+      <div class="presets">
+        <button class="preset" data-mins="60">1h</button>
+        <button class="preset selected" data-mins="240">4h</button>
+        <button class="preset" data-mins="1440">24h</button>
+        <input id="post-custom-mins" type="number" min="15" max="1440" placeholder="min" title="Custom (15–1440 min)" />
+      </div>
+      <button id="post-send" class="primary big">Post it</button>
+      <button id="post-back" class="ghost">back</button>
     </section>
 
     <!-- Call type manager (opened by clicking "Me", or from settings) -->

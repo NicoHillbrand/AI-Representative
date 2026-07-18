@@ -60,7 +60,7 @@ header#drag-bar {
 .dot.off { background: var(--red); }
 
 section { padding: 14px; overflow-y: auto; }
-#main, #settings, #interests { display: flex; flex-direction: column; flex: 1; gap: 10px; }
+#main, #settings, #interests, #post { display: flex; flex-direction: column; flex: 1; gap: 10px; }
 /* explicit display (flex etc.) anywhere would otherwise override the hidden
    attribute — e.g. .self-status kept "Me (inactive)" visible while available */
 [hidden] { display: none !important; }
@@ -218,6 +218,26 @@ button.mono { font-family: ui-monospace, Consolas, monospace; }
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ---- coordination opportunities ---- */
+#opps { display: flex; flex-direction: column; gap: 6px; flex: none; }
+.opp {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+.opp .info { flex: 1; min-width: 0; }
+.opp .name { font-weight: 600; }
+.opp .opp-text { margin-top: 1px; }
+.opp .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.opp .actions { display: flex; gap: 6px; flex: none; }
+.opp .actions button { padding: 4px 9px; font-size: 12px; }
+/* the picker markup is reused outside a row — no indent needed here */
+#post-audience { margin: 0; }
 
 /* ---- friends list ---- */
 /* min-height ≈ 1½ friend rows: a touch of room below the list, not a void */

@@ -11,15 +11,20 @@ import {
   bindTelegramChat,
   hasLiveSubscriber,
   memberByTelegramChat,
+  opportunitiesFor,
   pairWithCode,
+  postOpportunity,
+  presetsFor,
   redeemTelegramLinkCode,
   roster,
   setEventSink,
+  setPresets,
   setSignal,
   clearSignal,
   unlinkTelegram,
   type Member,
   type PresenceEvent,
+  type Preset,
 } from "./store.js";
 
 /**
@@ -57,6 +62,8 @@ async function tg(method: string, payload: Record<string, unknown>): Promise<any
 const dm = (chatId: number, text: string, extra: Record<string, unknown> = {}) =>
   tg("sendMessage", { chat_id: chatId, text, ...extra });
 
+const fmtMins = (m: number) => (m >= 120 ? `${Math.round(m / 60)} h` : `${m} min`);
+
 // --- outgoing notifications -----------------------------------------------------
 function onPresenceEvent(e: PresenceEvent): void {
   if (e.type === "ping" && !e.live && e.to.telegramChatId) {
@@ -72,6 +79,13 @@ function onPresenceEvent(e: PresenceEvent): void {
       dm(e.requester.telegramChatId, `📞 ${e.accepter.displayName} accepted! Join: ${e.url}`);
     if (!e.accepterLive && e.accepter.telegramChatId)
       dm(e.accepter.telegramChatId, `📞 Call with ${e.requester.displayName}: ${e.url}`);
+  } else if (e.type === "opportunity" && !e.live && e.to.telegramChatId) {
+    dm(
+      e.to.telegramChatId,
+      `📣 ${e.from.displayName} posted: "${e.text}" (stands for ${fmtMins(
+        Math.round((e.expiresAt - Date.now()) / 60_000),
+      )})`,
+    );
   } else if (e.type === "went-available" && !e.live && e.friend.telegramChatId) {
     const acts = e.member.signal?.activities
       .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
@@ -128,6 +142,8 @@ export const INTENT_SCHEMA = {
 interface IntentActivity {
   label: string;
   durationMinutes?: number;
+  /** Per-friend visibility, when known (preset picker); defaults to "all". */
+  visibleTo?: "all" | string[];
 }
 
 interface Intent {
@@ -168,7 +184,7 @@ function applyAvailability(
     note,
     activities.slice(0, 20).map((a) => ({
       label: a.label.slice(0, 60),
-      visibleTo: "all" as const,
+      visibleTo: a.visibleTo ?? ("all" as const),
       durationMinutes: a.durationMinutes,
     })),
   );
@@ -178,6 +194,103 @@ function applyAvailability(
     .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
     .join(", ");
   return `🟢 You're reachable for ${mm} min${actText ? ` — ${actText}` : ""}. Your friends' overlays just updated.`;
+}
+
+// --- /up preset picker --------------------------------------------------------------
+// Bare /up shows the member's call-type presets — the same catalog the
+// overlay composer offers, synced via POST /api/presence/presets — as
+// toggleable inline buttons, so people can SEE and SELECT the options
+// instead of typing them. Quick paths ("/up 45 note", plain language) skip it.
+interface Picker {
+  /** Snapshot at open time — keeps callback indices valid if presets change. */
+  presets: Preset[];
+  selected: Set<number>;
+  mins: number;
+}
+const pickers = new Map<number, Picker>(); // telegram chatId -> open picker
+
+const PICKER_WINDOWS = [30, 60, 90];
+
+function pickerKeyboard(p: Picker) {
+  const rows: { text: string; callback_data: string }[][] = p.presets.map((preset, i) => [
+    {
+      text: `${p.selected.has(i) ? "☑" : "☐"} ${preset.label}${
+        preset.durationMinutes ? ` (~${preset.durationMinutes}min)` : ""
+      }`,
+      callback_data: `up:t:${i}`,
+    },
+  ]);
+  rows.push(
+    PICKER_WINDOWS.map((m) => ({
+      text: p.mins === m ? `· ${m} min ·` : `${m} min`,
+      callback_data: `up:w:${m}`,
+    })),
+  );
+  rows.push([
+    { text: "🟢 Go available", callback_data: "up:go" },
+    { text: "Cancel", callback_data: "up:x" },
+  ]);
+  return { inline_keyboard: rows };
+}
+
+async function openPicker(chatId: number, member: Member): Promise<void> {
+  const picker: Picker = { presets: presetsFor(member), selected: new Set(), mins: 60 };
+  pickers.set(chatId, picker);
+  await dm(
+    chatId,
+    "Tick what you're up for (optional), pick how long you're reachable, then Go.\n(/presets manages this list; /up 45 <note> skips the picker.)",
+    { reply_markup: pickerKeyboard(picker) },
+  );
+}
+
+// --- /post parsing ----------------------------------------------------------------
+// "/post [minutes] [to <names>:] <text>" — the argument shapes:
+//   climbing Saturday?                        → all friends, default window
+//   90 to Ada, Bob: sauna tonight?            → 90 min, only Ada and Bob
+//   to Ada Lovelace: chess?                   → names may contain spaces,
+//                                               which is why the colon is the
+//                                               delimiter (a plain "to be
+//                                               honest..." post won't trigger).
+// Exported for tests.
+export function parsePostArgs(raw: string): {
+  minutes?: number;
+  toNames?: string[];
+  text: string;
+} {
+  let rest = raw.trim();
+  const minsMatch = rest.match(/^(\d+)\s*(?:min|m)?\s+(.*)$/is);
+  const minutes = minsMatch ? parseInt(minsMatch[1], 10) : undefined;
+  if (minsMatch) rest = minsMatch[2].trim();
+  const toMatch = rest.match(/^to\s+([^:]+):\s*(.*)$/is);
+  if (!toMatch) return { minutes, text: rest };
+  const toNames = toMatch[1].split(",").map((s) => s.trim()).filter(Boolean);
+  return toNames.length
+    ? { minutes, toNames, text: toMatch[2].trim() }
+    : { minutes, text: rest };
+}
+
+/** Case-insensitive exact match first, then unique prefix ("ada" → "Ada L…"). */
+function resolveFriendName(
+  name: string,
+  friendEntries: { memberId: string; displayName: string }[],
+): { ok: true; memberId: string; displayName: string } | { ok: false; error: string } {
+  const lower = name.toLowerCase();
+  const exact = friendEntries.filter((f) => f.displayName.toLowerCase() === lower);
+  const matches = exact.length
+    ? exact
+    : friendEntries.filter((f) => f.displayName.toLowerCase().startsWith(lower));
+  if (matches.length === 1) return { ok: true, ...matches[0] };
+  return {
+    ok: false,
+    error:
+      matches.length === 0
+        ? `No friend called "${name}". Your friends: ${
+            friendEntries.map((f) => f.displayName).join(", ") || "(none yet)"
+          }`
+        : `"${name}" matches several friends (${matches
+            .map((f) => f.displayName)
+            .join(", ")}) — be more specific.`,
+  };
 }
 
 // --- negotiation mode --------------------------------------------------------------
@@ -220,7 +333,21 @@ async function endNegotiation(chatId: number, session: Session): Promise<void> {
 // --- representative chat fallback ------------------------------------------------
 const chatHistories = new Map<number, ChatMessage[]>(); // telegram chatId -> history
 const HISTORY_MAX = 20;
+// Context is bounded two ways: at most HISTORY_MAX messages, and at most
+// this many characters in total — whichever bites first drops the OLDEST
+// messages. /new resets on demand; this keeps it bounded automatically.
+const HISTORY_CHAR_BUDGET = 24_000;
 const hinted = new Set<number>();
+
+function trimHistory(history: ChatMessage[]): ChatMessage[] {
+  const trimmed = history.slice(-HISTORY_MAX);
+  let total = trimmed.reduce((n, m) => n + m.content.length, 0);
+  // Keep at least the latest exchange, however large.
+  while (trimmed.length > 2 && total > HISTORY_CHAR_BUDGET) {
+    total -= trimmed.shift()!.content.length;
+  }
+  return trimmed;
+}
 
 async function chatWithRepresentative(chatId: number, text: string): Promise<void> {
   const history = chatHistories.get(chatId) ?? [];
@@ -229,12 +356,39 @@ async function chatWithRepresentative(chatId: number, text: string): Promise<voi
   try {
     const reply = await respond(history);
     history.push({ role: "assistant", content: reply });
-    chatHistories.set(chatId, history.slice(-HISTORY_MAX));
+    chatHistories.set(chatId, trimHistory(history));
     await dm(chatId, reply);
   } catch (err) {
     console.error("telegram chat failed", err);
     await dm(chatId, "The representative didn't answer — try again in a moment.");
   }
+}
+
+// --- command overview --------------------------------------------------------------
+// One source of truth for "what can I do here": /help shows it, and every
+// fresh /start (with or without a link code) opens with it.
+const NEGOTIATE_HELP =
+  "/negotiate — tell me what you're looking for; mutual interests with my principal get confirmed bilaterally, /done gives you the summary";
+
+function commandOverview(member: Member | undefined): string {
+  return member
+    ? `/up — pick from your call types and go available (buttons)
+/up [minutes] [note] — quick set, no picker (or just say it in plain words)
+/presets — see or edit your call types
+/status — who's up for a call, plus open posts
+/clear — stop being available
+/post [minutes] [to <names>:] <text> — post a coordination opportunity (default: all friends, 4 h) — e.g. /post 90 to Ada, Bob: sauna?
+/code — your friend code to share
+/addfriend <code> — add a friend
+${NEGOTIATE_HELP}
+/new — fresh chat context (the representative forgets earlier messages)
+/unlink — disconnect Telegram
+Anything else: chat with the representative.`
+    : `Ask me anything about my principal — just type.
+${NEGOTIATE_HELP}
+/join <friend-code> <name> — join the Huddle circle right here on Telegram (no install), or link an existing overlay from its settings.
+/new — fresh chat context (the representative forgets earlier messages)
+/help — show this overview again.`;
 }
 
 // --- incoming --------------------------------------------------------------------
@@ -249,7 +403,8 @@ async function onMessage(msg: any): Promise<void> {
   const text = msg.text.trim();
   const member = memberByTelegramChat(chatId);
 
-  // /start <link-code> — from the overlay's deep link.
+  // /start <link-code> — from the overlay's deep link. Every /start ends
+  // with the full command overview, so a fresh chat explains itself.
   if (text.startsWith("/start")) {
     const code = text.split(/\s+/)[1];
     if (code) {
@@ -257,29 +412,22 @@ async function onMessage(msg: any): Promise<void> {
       await dm(
         chatId,
         linked
-          ? `Linked to your Huddle identity, ${linked.displayName} ✅\nYou'll get pings, call requests and friend updates here when your overlay is closed.\nSet availability anytime: "/up 60 coworking" or just tell me in plain words. /help for more.`
+          ? `Linked to your Huddle identity, ${linked.displayName} ✅\nYou'll get pings, call requests and friend updates here when your overlay is closed.\n\nHere's everything you can do:\n${commandOverview(linked)}`
           : "That link code is invalid or expired — get a fresh one from the overlay (settings → Telegram).",
       );
     } else {
       await dm(
         chatId,
         member
-          ? `You're linked as ${member.displayName}. /help for commands.`
-          : "Hi! I'm an AI representative — ask me anything about my principal.\nGot a friend code? /join <code> <your name> puts you in the Huddle circle right here — or link an existing overlay from its settings.",
+          ? `You're linked as ${member.displayName}. Here's what you can do:\n\n${commandOverview(member)}`
+          : `Hi! I'm an AI representative. Here's what you can do:\n\n${commandOverview(undefined)}`,
       );
     }
     return;
   }
 
   if (text === "/help") {
-    const negotiateHelp =
-      "/negotiate — tell me what you're looking for; mutual interests with my principal get confirmed bilaterally, /done gives you the summary";
-    await dm(
-      chatId,
-      member
-        ? `/up [minutes] [note] — go available (or just say it in plain words)\n/status — who's up for a call\n/clear — stop being available\n/code — your friend code to share\n/addfriend <code> — add a friend\n${negotiateHelp}\n/unlink — disconnect Telegram\nAnything else: chat with the representative.`
-        : `Ask me anything about my principal.\n${negotiateHelp}\n/join <friend-code> <name> — join the Huddle circle right here on Telegram (no install), or link an existing overlay from its settings.`,
-    );
+    await dm(chatId, commandOverview(member));
     return;
   }
 
@@ -304,7 +452,7 @@ async function onMessage(msg: any): Promise<void> {
     bindTelegramChat(result.member, chatId);
     await dm(
       chatId,
-      `Welcome, ${result.member.displayName}! You're in — right here on Telegram, no install needed.\nYour own friend code (share it to add people): ${result.member.friendCode}\nTry: /up 60, /status, or just say "up for a call in the next hour". /help for everything.`,
+      `Welcome, ${result.member.displayName}! You're in — right here on Telegram, no install needed.\nYour own friend code (share it to add people): ${result.member.friendCode}\n\nHere's everything you can do:\n${commandOverview(result.member)}`,
     );
     return;
   }
@@ -335,6 +483,18 @@ async function onMessage(msg: any): Promise<void> {
     return;
   }
 
+  // /new — wipe the representative-chat context for this Telegram chat.
+  // Presence state (availability, friends, presets) is untouched; an open
+  // negotiation keeps its own session and is unaffected too.
+  if (text === "/new") {
+    chatHistories.delete(chatId);
+    await dm(
+      chatId,
+      "Fresh context — I've dropped our earlier chat messages here. (Availability, friends and presets are unaffected.)",
+    );
+    return;
+  }
+
   if (text === "/negotiate") {
     const session = createSession(`telegram:${msg.from?.first_name ?? "counterpart"}`);
     negotiations.set(chatId, session);
@@ -360,23 +520,88 @@ async function onMessage(msg: any): Promise<void> {
 
   if (member && text === "/status") {
     const up = roster(member).filter((m) => m.available && m.memberId !== member.id);
+    const availability = up.length
+      ? "Up for a call:\n" +
+        up
+          .map(
+            (m) =>
+              `🟢 ${m.displayName}${
+                m.activities?.length
+                  ? ` — ${m.activities
+                      .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
+                      .join(", ")}`
+                  : ""
+              }${m.note ? ` (${m.note})` : ""}`,
+          )
+          .join("\n")
+      : "Nobody's signaled right now.";
+    // Telegram-only members have no overlay — /status is where they see
+    // which coordination posts are still open.
+    const posts = opportunitiesFor(member);
+    const postLines = posts.length
+      ? "\n\nOpen posts:\n" +
+        posts
+          .map((o) => {
+            const left = Math.round((new Date(o.expiresAt).getTime() - Date.now()) / 60_000);
+            return `📣 ${o.mine ? "You" : o.from.displayName}: "${o.text}" (${fmtMins(left)} left)`;
+          })
+          .join("\n")
+      : "";
+    await dm(chatId, availability + postLines);
+    return;
+  }
+
+  // /post — a coordination opportunity to all friends, one friend, or a
+  // group, straight from chat.
+  if (member && text.startsWith("/post")) {
+    const usage =
+      "Usage: /post [minutes] [to <names>:] <text>\n" +
+      "e.g. /post climbing Saturday morning?\n" +
+      "/post to Ada: chess tonight?\n" +
+      "/post 90 to Ada, Bob: sauna in a bit? (names comma-separated, colon after)";
+    const { minutes, toNames, text: body } = parsePostArgs(text.slice(5));
+    if (!body) {
+      await dm(chatId, usage);
+      return;
+    }
+    let audience: "all" | string[] = "all";
+    const audienceNames: string[] = [];
+    if (toNames) {
+      const friendEntries = roster(member)
+        .filter((m) => m.memberId !== member.id)
+        .map((m) => ({ memberId: m.memberId, displayName: m.displayName }));
+      const ids: string[] = [];
+      for (const name of toNames) {
+        const match = resolveFriendName(name, friendEntries);
+        if (!match.ok) {
+          await dm(chatId, `${match.error}\n\n${usage}`);
+          return;
+        }
+        ids.push(match.memberId);
+        audienceNames.push(match.displayName);
+      }
+      audience = ids;
+    }
+    const result = postOpportunity(member, body, audience, minutes);
+    if (!result.ok) {
+      await dm(
+        chatId,
+        result.error === "too_many"
+          ? "You already have 5 open posts — they expire on their own, or remove one in the overlay."
+          : result.error === "too_fast"
+            ? "Easy — you just posted. Give it a moment."
+            : "Couldn't post that.",
+      );
+      return;
+    }
+    const mins = Math.round(
+      (new Date(result.opportunity.expiresAt).getTime() - Date.now()) / 60_000,
+    );
     await dm(
       chatId,
-      up.length
-        ? "Up for a call:\n" +
-            up
-              .map(
-                (m) =>
-                  `🟢 ${m.displayName}${
-                    m.activities?.length
-                      ? ` — ${m.activities
-                          .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
-                          .join(", ")}`
-                      : ""
-                  }${m.note ? ` (${m.note})` : ""}`,
-              )
-              .join("\n")
-        : "Nobody's signaled right now.",
+      `📣 Posted to ${
+        audience === "all" ? "all your friends" : [...new Set(audienceNames)].join(", ")
+      } (stands for ${fmtMins(mins)}): "${result.opportunity.text}"`,
     );
     return;
   }
@@ -388,15 +613,65 @@ async function onMessage(msg: any): Promise<void> {
   }
 
   if (member && text.startsWith("/up")) {
-    // "/up", "/up 45", "/up 45min focus time", "/up focus time" all work:
-    // a leading number (with optional "min"/"m" suffix) is the window, the
-    // rest is the note.
+    // "/up" alone opens the preset picker; "/up 45", "/up 45min focus time",
+    // "/up focus time" set directly — a leading number (with optional
+    // "min"/"m" suffix) is the window, the rest is the note.
     const [, first, ...rest] = text.split(/\s+/);
-    const mins = first ? parseInt(first, 10) : NaN;
-    const note = (Number.isFinite(mins) ? rest : [first ?? "", ...rest]).join(" ").trim();
+    if (!first) {
+      await openPicker(chatId, member);
+      return;
+    }
+    const mins = parseInt(first, 10);
+    const note = (Number.isFinite(mins) ? rest : [first, ...rest]).join(" ").trim();
     await dm(
       chatId,
       applyAvailability(member, Number.isFinite(mins) ? mins : undefined, [], note || undefined),
+    );
+    return;
+  }
+
+  // /presets — see and edit the call-type catalog the /up picker offers.
+  // Overlay users edit there (it re-syncs on every change and on launch, so
+  // it wins); this is mainly for Telegram-only members.
+  if (member && text.startsWith("/presets")) {
+    const [, sub, ...restArgs] = text.split(/\s+/);
+    const current = presetsFor(member);
+    const list = (presets: Preset[]) =>
+      presets.length
+        ? presets
+            .map(
+              (p, i) =>
+                `${i + 1}. ${p.label}${p.durationMinutes ? ` (~${p.durationMinutes}min call)` : ""}${
+                  p.visibleTo !== "all" ? " (limited visibility)" : ""
+                }`,
+            )
+            .join("\n")
+        : "(none)";
+    if (sub === "add") {
+      const label = restArgs.join(" ").trim();
+      if (!label) {
+        await dm(chatId, "Usage: /presets add <call type>\ne.g. /presets add rubber-duck a bug");
+        return;
+      }
+      const updated = setPresets(member, [...current, { label, visibleTo: "all" }]);
+      await dm(chatId, `Added. Your call types:\n${list(updated)}`);
+      return;
+    }
+    if (sub === "rm") {
+      const n = parseInt(restArgs[0] ?? "", 10);
+      if (!Number.isFinite(n) || n < 1 || n > current.length) {
+        await dm(chatId, `Usage: /presets rm <number 1–${current.length}> (see /presets for the list)`);
+        return;
+      }
+      const updated = setPresets(member, current.filter((_, i) => i !== n - 1));
+      await dm(chatId, `Removed. Your call types:\n${list(updated)}`);
+      return;
+    }
+    await dm(
+      chatId,
+      `Your call types (what the /up picker offers):\n${list(current)}\n\n/presets add <label> — add one\n/presets rm <n> — remove one${
+        member.presets ? "" : "\n(These are the defaults — edit them and they become yours.)"
+      }`,
     );
     return;
   }
@@ -438,7 +713,7 @@ async function onMessage(msg: any): Promise<void> {
     hinted.add(chatId);
     await dm(
       chatId,
-      "(You're chatting with the AI representative. Huddle users can link this bot from the overlay — settings → Telegram.)",
+      "(You're chatting with the AI representative. Huddle users can link this bot from the overlay — settings → Telegram. /help shows everything you can do here.)",
     );
   }
   await chatWithRepresentative(chatId, text);
@@ -446,16 +721,73 @@ async function onMessage(msg: any): Promise<void> {
 
 async function onCallback(cb: any): Promise<void> {
   const chatId: number | undefined = cb.message?.chat?.id;
+  const messageId: number | undefined = cb.message?.message_id;
   const member = chatId !== undefined ? memberByTelegramChat(chatId) : undefined;
-  const [action, fromId] = String(cb.data ?? "").split(":");
-  let toastText = "Something went wrong.";
-  if (member && action === "accept" && fromId) {
-    const result = acceptCall(member, fromId, mintFallbackUrl());
-    toastText = result.ok
-      ? "Accepted — the room link is on its way."
-      : "That request expired — ask them to call again.";
+  const [action, ...args] = String(cb.data ?? "").split(":");
+  const answer = (text?: string) =>
+    tg("answerCallbackQuery", { callback_query_id: cb.id, ...(text ? { text } : {}) });
+
+  if (member && action === "accept" && args[0]) {
+    const result = acceptCall(member, args[0], mintFallbackUrl());
+    await answer(
+      result.ok
+        ? "Accepted — the room link is on its way."
+        : "That request expired — ask them to call again.",
+    );
+    return;
   }
-  await tg("answerCallbackQuery", { callback_query_id: cb.id, text: toastText });
+
+  // /up picker buttons: up:t:<i> toggle preset, up:w:<mins> window,
+  // up:go apply, up:x cancel. Toggles re-render the keyboard in place.
+  if (member && chatId !== undefined && action === "up") {
+    const picker = pickers.get(chatId);
+    if (!picker) {
+      await answer("This picker expired — send /up again.");
+      return;
+    }
+    if (args[0] === "x") {
+      pickers.delete(chatId);
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "Okay — not going available." });
+      return;
+    }
+    if (args[0] === "go") {
+      pickers.delete(chatId);
+      const chosen = [...picker.selected].sort((a, b) => a - b).map((i) => picker.presets[i]);
+      const confirmation = applyAvailability(
+        member,
+        picker.mins,
+        chosen.map((p) => ({
+          label: p.label,
+          durationMinutes: p.durationMinutes,
+          visibleTo: p.visibleTo,
+        })),
+      );
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: confirmation });
+      else await dm(chatId, confirmation);
+      return;
+    }
+    if (args[0] === "t") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (picker.presets[i]) picker.selected.has(i) ? picker.selected.delete(i) : picker.selected.add(i);
+    } else if (args[0] === "w") {
+      const m = parseInt(args[1] ?? "", 10);
+      if (PICKER_WINDOWS.includes(m)) picker.mins = m;
+    }
+    await answer();
+    if (messageId !== undefined)
+      await tg("editMessageReplyMarkup", {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: pickerKeyboard(picker),
+      });
+    return;
+  }
+
+  await answer("Something went wrong.");
 }
 
 // --- lifecycle --------------------------------------------------------------------
@@ -468,6 +800,25 @@ export async function startTelegramBridge(): Promise<void> {
   }
   botUsername = me.username;
   setEventSink(onPresenceEvent);
+  // Populate Telegram's "/" command menu (shown next to the input field and
+  // as autocomplete while typing) — same catalog as /help.
+  void tg("setMyCommands", {
+    commands: [
+      { command: "help", description: "Overview of everything you can do" },
+      { command: "up", description: "Go available — pick from your call types" },
+      { command: "presets", description: "See or edit your call types" },
+      { command: "status", description: "Who's up for a call, plus open posts" },
+      { command: "clear", description: "Stop being available" },
+      { command: "post", description: "Post a coordination opportunity to friends" },
+      { command: "code", description: "Your friend code to share" },
+      { command: "addfriend", description: "Add a friend by their code" },
+      { command: "negotiate", description: "Find mutual interests, disclosed only when mutual" },
+      { command: "done", description: "End the negotiation with a summary" },
+      { command: "new", description: "Fresh chat context — forget earlier messages" },
+      { command: "join", description: "Join the Huddle circle with a friend code" },
+      { command: "unlink", description: "Disconnect Telegram notifications" },
+    ],
+  });
   console.log(`Telegram bridge active: @${botUsername}`);
 
   let offset = 0;

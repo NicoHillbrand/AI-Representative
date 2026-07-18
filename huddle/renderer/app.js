@@ -8,7 +8,12 @@ const $ = (id) => document.getElementById(id);
 //        notify, quietPings }
 let cfg = {};
 const members = new Map(); // memberId -> roster entry (as this viewer sees it)
+const opps = new Map(); // opportunityId -> post (as this viewer sees it)
 let selectedMins = 60;
+// Post composer state: audience + how long the post stands.
+let postAll = true;
+const postSelected = new Set(); // memberIds, when postAll is false
+let postMins = 240;
 let streamAbort = null;
 let backoffMs = 1000;
 let reconnectTimer = null;
@@ -44,6 +49,12 @@ function remainingMin(entry) {
   return Math.max(0, Math.round((new Date(entry.availableUntil) - Date.now()) / 60_000));
 }
 
+// "45 min" below two hours, "3h" above — posts can stand for a day.
+function fmtLeft(iso) {
+  const mins = Math.max(0, Math.round((new Date(iso) - Date.now()) / 60_000));
+  return mins >= 120 ? `${Math.round(mins / 60)}h` : `${mins} min`;
+}
+
 function setConnected(on) {
   const dot = $("conn-dot");
   dot.className = `dot ${on ? "on" : "off"}`;
@@ -52,6 +63,65 @@ function setConnected(on) {
 
 async function persistActivities() {
   cfg = await window.huddle.storeSet({ activities: cfg.activities });
+  syncPresets();
+}
+
+// Mirror the preset catalog to the server (debounced — visibility pickers
+// fire one persist per click) so the Telegram bot's /up picker offers the
+// same call types. Best-effort: the overlay never depends on it.
+let presetSyncTimer = null;
+function syncPresets() {
+  if (!cfg.deviceToken || !cfg.serverUrl || !Array.isArray(cfg.activities)) return;
+  clearTimeout(presetSyncTimer);
+  presetSyncTimer = setTimeout(() => {
+    api("/api/presence/presets", {
+      method: "POST",
+      body: JSON.stringify({
+        presets: cfg.activities.map(({ label, visibleTo, durationMinutes }) => ({
+          label,
+          visibleTo,
+          durationMinutes,
+        })),
+      }),
+    }).catch(() => {});
+  }, 800);
+}
+
+/** Take the server's catalog (edited from Telegram, or our own echo) as
+ * truth, keeping local-only state — ids, ticked-state, offer minutes — for
+ * labels that survive. Persists locally WITHOUT pushing back (no echo loop). */
+async function adoptPresets(presets) {
+  const byLabel = new Map(cfg.activities.map((a) => [a.label, a]));
+  cfg.activities = presets.map((p) => {
+    const prev = byLabel.get(p.label);
+    return {
+      id: prev?.id ?? crypto.randomUUID(),
+      label: p.label,
+      visibleTo: p.visibleTo,
+      durationMinutes: p.durationMinutes,
+      selected: prev?.selected ?? false,
+      ...(prev?.minutes ? { minutes: prev.minutes } : {}),
+    };
+  });
+  cfg = await window.huddle.storeSet({ activities: cfg.activities });
+  renderActivityEditor();
+  renderActivitySelect();
+}
+
+/** Boot-time preset sync, two-way: if the member has a server-side catalog
+ * (possibly edited from Telegram while we were closed), adopt it; if the
+ * server has never seen one, ours becomes it. */
+async function reconcilePresets() {
+  if (!cfg.deviceToken || !cfg.serverUrl) return;
+  try {
+    const res = await api("/api/presence/presets");
+    if (!res.ok) return;
+    const body = await res.json();
+    if (body.customized) await adoptPresets(body.presets);
+    else syncPresets();
+  } catch {
+    /* offline — the next edit or launch retries */
+  }
 }
 
 /** Chips for signal activities: "eval project (~5min call)". The offer
@@ -264,6 +334,100 @@ function addActivity() {
   renderActivityEditor();
 }
 
+// --- coordination opportunities ------------------------------------------------
+function oppAudienceText(o) {
+  if (o.audience === "all") return "to everyone";
+  if (!o.audience) return "";
+  return o.audience.length === 1
+    ? `to ${members.get(o.audience[0])?.displayName ?? "1 friend"}`
+    : `to ${o.audience.length} friends`;
+}
+
+/** Main view: active posts addressed to you (or by you), newest first. */
+function renderOpps() {
+  const list = $("opps");
+  const items = [...opps.values()].sort((a, b) => new Date(b.postedAt) - new Date(a.postedAt));
+  $("opps-head").hidden = !items.length;
+  list.hidden = !items.length;
+  list.replaceChildren(
+    ...items.map((o) => {
+      const row = document.createElement("div");
+      row.className = "opp";
+
+      const info = document.createElement("div");
+      info.className = "info";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = o.mine ? "You" : o.from.displayName;
+      const text = document.createElement("div");
+      text.className = "opp-text";
+      text.textContent = o.text;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `${fmtLeft(o.expiresAt)} left${o.mine ? ` · ${oppAudienceText(o)}` : ""}`;
+      info.append(name, text, meta);
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      if (o.mine) {
+        const del = document.createElement("button");
+        del.className = "act-del";
+        del.textContent = "×";
+        del.title = "Take this post down";
+        del.addEventListener("click", () => removePost(o.id));
+        actions.append(del);
+      } else {
+        const ping = document.createElement("button");
+        ping.textContent = "👋";
+        ping.title = `Interested — ping ${o.from.displayName}`;
+        ping.addEventListener("click", () => sendPing(o.from));
+        actions.append(ping);
+      }
+
+      row.append(info, actions);
+      return row;
+    }),
+  );
+}
+
+/** Composer: everyone, or tick specific friends (like a call type's visibility). */
+function renderPostAudience() {
+  const box = $("post-audience");
+  box.replaceChildren();
+
+  const everyone = document.createElement("label");
+  const evCheck = document.createElement("input");
+  evCheck.type = "checkbox";
+  evCheck.checked = postAll;
+  evCheck.addEventListener("change", () => {
+    postAll = evCheck.checked;
+    renderPostAudience();
+  });
+  everyone.append(evCheck, document.createTextNode("everyone"));
+  box.append(everyone);
+
+  if (!postAll) {
+    const others = friends();
+    if (!others.length) {
+      const none = document.createElement("span");
+      none.className = "muted";
+      none.textContent = "no friends yet";
+      box.append(none);
+    }
+    for (const f of others) {
+      const row = document.createElement("label");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = postSelected.has(f.memberId);
+      c.addEventListener("change", () => {
+        c.checked ? postSelected.add(f.memberId) : postSelected.delete(f.memberId);
+      });
+      row.append(c, document.createTextNode(f.displayName));
+      box.append(row);
+    }
+  }
+}
+
 // --- rendering -------------------------------------------------------------------
 function render() {
   const me = self();
@@ -323,6 +487,7 @@ function render() {
     }),
   );
   $("roster-empty").hidden = others.length > 0;
+  renderOpps();
 
   const availableCount = [...members.values()].filter((m) => m.available).length;
   window.huddle.setTrayState(
@@ -351,8 +516,10 @@ setInterval(() => {
       anyAvailable = true;
     }
   }
+  // Lapsed posts drop out locally — the server deletes them silently.
+  for (const [id, o] of opps) if (Date.now() >= new Date(o.expiresAt)) opps.delete(id);
   // Countdown chips are visible whenever anyone is on — keep them ticking.
-  if (anyAvailable || selfAvailable()) render();
+  if (anyAvailable || selfAvailable() || opps.size) render();
 }, 1000);
 
 // --- stream ------------------------------------------------------------------------
@@ -414,9 +581,25 @@ async function connectStream() {
         if (event === "roster") {
           members.clear();
           for (const m of payload.members) members.set(m.memberId, m);
+          opps.clear();
+          for (const o of payload.opportunities ?? []) opps.set(o.id, o);
           if (payload.callLink) cfg.callLink = payload.callLink;
           render();
           renderActivityEditor(); // visibility pickers list friends from the roster
+        } else if (event === "opportunity") {
+          opps.set(payload.opportunity.id, payload.opportunity);
+          render();
+          if (!payload.opportunity.mine) {
+            toast(`📣 ${payload.opportunity.from.displayName}: ${payload.opportunity.text}`, 20_000);
+            window.huddle.notify(
+              `📣 ${payload.opportunity.from.displayName} posted`,
+              payload.opportunity.text,
+              cfg.quietPings === true,
+            );
+          }
+        } else if (event === "opportunity-removed") {
+          opps.delete(payload.id);
+          render();
         } else if (event === "update") {
           applyUpdate(payload.member);
           render();
@@ -426,6 +609,10 @@ async function connectStream() {
           members.delete(payload.memberId);
           render();
           if (!$("settings").hidden) renderFriendsEditor();
+        } else if (event === "presets") {
+          // Catalog edited elsewhere (Telegram /presets, another device) —
+          // or the echo of our own push; adoptPresets is idempotent for that.
+          adoptPresets(payload.presets);
         } else if (event === "ping-from") {
           toast(`👋 ${payload.from.displayName} pinged you`, 20_000);
           window.huddle.notify(
@@ -548,6 +735,46 @@ async function sendPing(m) {
   toast(delivered ? `👋 Pinged ${m.displayName}` : `${m.displayName}'s overlay is offline right now`);
 }
 
+function chosenPostMinutes() {
+  const custom = Number($("post-custom-mins").value);
+  if ($("post-custom-mins").value && custom >= 15 && custom <= 1440) return Math.round(custom);
+  return postMins;
+}
+
+async function sendPost() {
+  const text = $("post-text").value.trim();
+  if (!text) return toast("Write what you're proposing first.");
+  const audience = postAll ? "all" : [...postSelected];
+  if (audience !== "all" && !audience.length) return toast("Pick at least one friend to post to.");
+  const res = await api("/api/presence/opportunities", {
+    method: "POST",
+    body: JSON.stringify({ text, audience, minutes: chosenPostMinutes() }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return toast(
+      body.error === "too_many"
+        ? "You already have 5 open posts — take one down first."
+        : body.error === "too_fast"
+          ? "Easy — you just posted. Give it a moment."
+          : "Couldn't post — are you online?",
+    );
+  }
+  const { opportunity } = await res.json();
+  opps.set(opportunity.id, opportunity);
+  $("post-text").value = "";
+  showView("main");
+  render();
+  toast("📣 Posted.", 5_000);
+}
+
+async function removePost(id) {
+  const res = await api(`/api/presence/opportunities/${id}`, { method: "DELETE" });
+  if (!res.ok) return toast("Couldn't take that post down.");
+  opps.delete(id);
+  render();
+}
+
 async function signOut(message) {
   streamAbort?.abort();
   clearTimeout(reconnectTimer);
@@ -560,7 +787,7 @@ async function signOut(message) {
 // --- window sizing ---------------------------------------------------------------------
 // The window hugs its content: header + whichever view is active. A
 // MutationObserver keeps it honest through roster changes, editors, chips.
-const VIEWS = ["onboarding", "main", "settings", "interests", "manage"];
+const VIEWS = ["onboarding", "main", "settings", "interests", "manage", "post"];
 let fitScheduled = false;
 function fitWindow() {
   if (fitScheduled) return;
@@ -598,6 +825,12 @@ function openManage() {
   showView("manage");
 }
 
+function openPost() {
+  if (!cfg.deviceToken) return;
+  renderPostAudience();
+  showView("post");
+}
+
 function showOnboardingError(error) {
   $("ob-server").value = cfg.serverUrl || "https://ai.nicohillbrand.com";
   const err = $("ob-error");
@@ -633,6 +866,7 @@ async function join() {
     });
     showView("main");
     connectStream();
+    reconcilePresets();
   } catch (e) {
     err.textContent = e.message === "Failed to fetch" ? "Can't reach that server." : e.message;
     err.hidden = false;
@@ -791,19 +1025,41 @@ function startShortcutRecording() {
 $("ob-join").addEventListener("click", join);
 $("onboarding").addEventListener("keydown", (e) => e.key === "Enter" && join());
 
-for (const btn of document.querySelectorAll(".preset")) {
+for (const btn of document.querySelectorAll("#interests .preset")) {
   btn.addEventListener("click", () => {
     selectedMins = Number(btn.dataset.mins);
     $("custom-mins").value = "";
     $("custom-mins").classList.remove("selected");
-    document.querySelectorAll(".preset").forEach((b) => b.classList.toggle("selected", b === btn));
+    document
+      .querySelectorAll("#interests .preset")
+      .forEach((b) => b.classList.toggle("selected", b === btn));
   });
 }
 $("custom-mins").addEventListener("input", () => {
   const has = !!$("custom-mins").value;
   $("custom-mins").classList.toggle("selected", has);
-  document.querySelectorAll(".preset").forEach((b) => b.classList.toggle("selected", false));
-  if (!has) document.querySelector(`.preset[data-mins="${selectedMins}"]`)?.classList.add("selected");
+  document.querySelectorAll("#interests .preset").forEach((b) => b.classList.toggle("selected", false));
+  if (!has)
+    document
+      .querySelector(`#interests .preset[data-mins="${selectedMins}"]`)
+      ?.classList.add("selected");
+});
+
+// Post composer: same preset pattern, its own state (posts can stand for 24h).
+for (const btn of document.querySelectorAll("#post .preset")) {
+  btn.addEventListener("click", () => {
+    postMins = Number(btn.dataset.mins);
+    $("post-custom-mins").value = "";
+    $("post-custom-mins").classList.remove("selected");
+    document.querySelectorAll("#post .preset").forEach((b) => b.classList.toggle("selected", b === btn));
+  });
+}
+$("post-custom-mins").addEventListener("input", () => {
+  const has = !!$("post-custom-mins").value;
+  $("post-custom-mins").classList.toggle("selected", has);
+  document.querySelectorAll("#post .preset").forEach((b) => b.classList.toggle("selected", false));
+  if (!has)
+    document.querySelector(`#post .preset[data-mins="${postMins}"]`)?.classList.add("selected");
 });
 
 $("act-add-btn").addEventListener("click", addActivity);
@@ -825,6 +1081,13 @@ $("interests-btn").addEventListener("click", () => {
   $("interests").hidden ? openInterests() : showView("main");
 });
 $("interests-back").addEventListener("click", () => showView("main"));
+// 📣 toggles the post composer the same way.
+$("post-btn").addEventListener("click", () => {
+  $("post").hidden ? openPost() : showView("main");
+});
+$("post-back").addEventListener("click", () => showView("main"));
+$("post-send").addEventListener("click", sendPost);
+$("post-text").addEventListener("keydown", (e) => e.key === "Enter" && sendPost());
 $("self-off").addEventListener("click", openManage);
 $("open-manage").addEventListener("click", openManage);
 $("manage-back").addEventListener("click", () => showView("main"));
@@ -866,7 +1129,8 @@ $("set-autostart").addEventListener("change", async (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || recordingShortcut) return;
-  if (!$("settings").hidden || !$("interests").hidden || !$("manage").hidden) showView("main");
+  if (!$("settings").hidden || !$("interests").hidden || !$("manage").hidden || !$("post").hidden)
+    showView("main");
   else window.huddle.hideWindow();
 });
 
@@ -889,6 +1153,7 @@ window.huddle.onQuickClear(() => cfg.deviceToken && clearSignal());
   if (cfg.deviceToken && cfg.serverUrl) {
     showView("main");
     connectStream();
+    reconcilePresets();
   } else {
     showView("onboarding");
     showOnboardingError();

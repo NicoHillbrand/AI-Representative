@@ -42,6 +42,15 @@ export interface Signal {
   activities: StoredActivity[];
 }
 
+/** A reusable call-type preset (the overlay's catalog, mirrored server-side
+ * so the Telegram picker can offer the same options). */
+export interface Preset {
+  label: string;
+  visibleTo: "all" | string[];
+  /** Expected call length in minutes (optional, display-only). */
+  durationMinutes?: number;
+}
+
 export interface Member {
   id: string;
   displayName: string;
@@ -55,6 +64,10 @@ export interface Member {
   friends: Set<string>;
   /** Linked Telegram chat for out-of-overlay notifications (optional). */
   telegramChatId?: number;
+  /** Call-type presets. Absent → DEFAULT_PRESETS. The overlay is the primary
+   * editor (it re-syncs on every change); Telegram-only members edit via
+   * /presets. */
+  presets?: Preset[];
   signal?: Signal;
 }
 
@@ -65,7 +78,8 @@ export type PresenceEvent =
   | { type: "ping"; from: Member; to: Member; live: boolean }
   | { type: "call-request"; from: Member; to: Member; live: boolean }
   | { type: "call-start"; requester: Member; accepter: Member; url: string; requesterLive: boolean; accepterLive: boolean }
-  | { type: "went-available"; member: Member; friend: Member; live: boolean };
+  | { type: "went-available"; member: Member; friend: Member; live: boolean }
+  | { type: "opportunity"; from: Member; to: Member; text: string; expiresAt: number; live: boolean };
 
 let eventSink: ((e: PresenceEvent) => void) | undefined;
 export function setEventSink(fn: (e: PresenceEvent) => void): void {
@@ -111,6 +125,7 @@ function load(): void {
         friendCode?: string;
         friends?: string[];
         telegramChatId?: number;
+        presets?: Preset[];
       }[];
     };
     for (const m of raw.members ?? []) {
@@ -122,6 +137,7 @@ function load(): void {
         friendCode: m.friendCode || generateCode(),
         friends: new Set(m.friends ?? []),
         telegramChatId: m.telegramChatId,
+        presets: m.presets,
       };
       members.set(member.id, member);
       for (const t of member.tokens) byToken.set(t, member);
@@ -141,6 +157,7 @@ function save(): void {
       friendCode: m.friendCode,
       friends: [...m.friends],
       ...(m.telegramChatId ? { telegramChatId: m.telegramChatId } : {}),
+      ...(m.presets ? { presets: m.presets } : {}),
     })),
   };
   writeFileSync(dataFile, JSON.stringify(raw, null, 2));
@@ -286,6 +303,40 @@ export function unlinkTelegram(member: Member): void {
 
 export function memberByTelegramChat(chatId: number): Member | undefined {
   return [...members.values()].find((m) => m.telegramChatId === chatId);
+}
+
+// --- call-type presets ------------------------------------------------------------
+// Same defaults as the overlay ships with — a Telegram-only member sees a
+// sensible picker before they (or their overlay) ever customize anything.
+export const DEFAULT_PRESETS: readonly string[] = [
+  "get unstuck on a task",
+  "help me escape a local minimum",
+  "meditation",
+  "coworking",
+  "body doubling",
+];
+
+export function presetsFor(member: Member): Preset[] {
+  return (
+    member.presets ?? DEFAULT_PRESETS.map((label) => ({ label, visibleTo: "all" as const }))
+  );
+}
+
+/** Replace the whole catalog (callers sanitize shape; we enforce caps).
+ * Edits made anywhere (overlay push, Telegram /presets) reach the member's
+ * own connected overlays live, so the two editors never diverge. */
+export function setPresets(member: Member, presets: Preset[]): Preset[] {
+  member.presets = presets
+    .map((p) => ({
+      label: p.label.trim().slice(0, 60),
+      visibleTo: p.visibleTo === "all" ? ("all" as const) : p.visibleTo.slice(0, 100),
+      ...(p.durationMinutes ? { durationMinutes: clampDuration(p.durationMinutes) } : {}),
+    }))
+    .filter((p) => p.label)
+    .slice(0, 20);
+  save();
+  sendTo(member.id, "presets", { presets: member.presets });
+  return member.presets;
 }
 
 /** Does this member have any overlay connected right now? */
@@ -463,6 +514,122 @@ export const pingMember = (from: Member, toMemberId: string) => {
   return result;
 };
 
+// --- coordination opportunities --------------------------------------------------
+// A post ("anyone up for climbing Saturday?") addressed to everyone you're
+// friends with, one friend, or a chosen group. Same privacy stance as
+// activities: the audience is enforced server-side, and only the poster ever
+// sees who a post was addressed to. In-memory and expiring, like signals.
+interface Opportunity {
+  id: string;
+  fromId: string;
+  text: string;
+  /** "all" (= the poster's friends) or specific memberIds. */
+  audience: "all" | string[];
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface OpportunityView {
+  id: string;
+  from: { memberId: string; displayName: string };
+  text: string;
+  postedAt: string;
+  expiresAt: string;
+  mine: boolean;
+  /** Only present on your own posts — recipients never see the list. */
+  audience?: "all" | string[];
+}
+
+const opportunities = new Map<string, Opportunity>();
+const OPP_MAX_ACTIVE = 5;
+const OPP_DEFAULT_MINS = 240;
+// Posts are more asynchronous than signals ("Saturday?") — allow up to a day.
+const clampOppMins = (m: number) => Math.min(1440, Math.max(15, Math.round(m)));
+const lastPost = new Map<string, number>();
+
+function oppView(o: Opportunity, viewerId: string): OpportunityView {
+  const poster = members.get(o.fromId);
+  return {
+    id: o.id,
+    from: { memberId: o.fromId, displayName: poster?.displayName ?? "?" },
+    text: o.text,
+    postedAt: new Date(o.createdAt).toISOString(),
+    expiresAt: new Date(o.expiresAt).toISOString(),
+    mine: o.fromId === viewerId,
+    ...(o.fromId === viewerId ? { audience: o.audience } : {}),
+  };
+}
+
+/** Friendship is checked at view time, so unfriending hides the post. */
+function canSeeOpp(o: Opportunity, viewerId: string): boolean {
+  if (o.fromId === viewerId) return true;
+  const poster = members.get(o.fromId);
+  if (!poster?.friends.has(viewerId)) return false;
+  return o.audience === "all" || o.audience.includes(viewerId);
+}
+
+function oppRecipients(o: Opportunity): Member[] {
+  const poster = members.get(o.fromId);
+  if (!poster) return [];
+  const ids = o.audience === "all" ? [...poster.friends] : o.audience;
+  return ids
+    .map((id) => members.get(id))
+    .filter((m): m is Member => !!m && poster.friends.has(m.id));
+}
+
+export function postOpportunity(
+  from: Member,
+  text: string,
+  audience: "all" | string[],
+  minutes?: number,
+): { ok: true; opportunity: OpportunityView } | { ok: false; error: string } {
+  const body = text.trim().slice(0, 200);
+  if (!body) return { ok: false, error: "empty_text" };
+  const now = Date.now();
+  if (now - (lastPost.get(from.id) ?? 0) < 3_000) return { ok: false, error: "too_fast" };
+  const active = [...opportunities.values()].filter((o) => o.fromId === from.id && now < o.expiresAt);
+  if (active.length >= OPP_MAX_ACTIVE) return { ok: false, error: "too_many" };
+  // Non-friends silently drop out of the audience — no probing.
+  const aud: Opportunity["audience"] =
+    audience === "all" ? "all" : [...new Set(audience)].filter((id) => from.friends.has(id));
+  if (aud !== "all" && !aud.length) return { ok: false, error: "empty_audience" };
+  lastPost.set(from.id, now);
+  const opp: Opportunity = {
+    id: `opp_${randomUUID()}`,
+    fromId: from.id,
+    text: body,
+    audience: aud,
+    createdAt: now,
+    expiresAt: now + clampOppMins(minutes ?? OPP_DEFAULT_MINS) * 60_000,
+  };
+  opportunities.set(opp.id, opp);
+  // The poster's own (other) devices learn about it too.
+  sendTo(from.id, "opportunity", { opportunity: oppView(opp, from.id) });
+  for (const r of oppRecipients(opp)) {
+    const live = sendTo(r.id, "opportunity", { opportunity: oppView(opp, r.id) });
+    emit({ type: "opportunity", from, to: r, text: body, expiresAt: opp.expiresAt, live });
+  }
+  return { ok: true, opportunity: oppView(opp, from.id) };
+}
+
+/** Poster-only. Recipients' overlays drop the post immediately. */
+export function removeOpportunity(member: Member, id: string): boolean {
+  const opp = opportunities.get(id);
+  if (!opp || opp.fromId !== member.id) return false;
+  opportunities.delete(id);
+  sendTo(member.id, "opportunity-removed", { id });
+  for (const r of oppRecipients(opp)) sendTo(r.id, "opportunity-removed", { id });
+  return true;
+}
+
+export function opportunitiesFor(viewer: Member): OpportunityView[] {
+  const now = Date.now();
+  return [...opportunities.values()]
+    .filter((o) => now < o.expiresAt && canSeeOpp(o, viewer.id))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((o) => oppView(o, viewer.id));
+}
+
 // --- call handshake ------------------------------------------------------------
 // A call only happens by mutual consent: A requests (optionally attaching
 // their own room link, e.g. a personal Google Meet), B accepts, THEN the
@@ -530,4 +697,7 @@ setInterval(() => {
       broadcastMember(m);
     }
   }
+  // Lapsed posts vanish silently — clients tick them out locally from
+  // expiresAt, so no broadcast is needed.
+  for (const [id, o] of opportunities) if (now >= o.expiresAt) opportunities.delete(id);
 }, 15_000).unref?.();

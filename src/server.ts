@@ -23,6 +23,11 @@ import {
   rotateFriendCode,
   createTelegramLinkCode,
   unlinkTelegram,
+  postOpportunity,
+  removeOpportunity,
+  opportunitiesFor,
+  setPresets,
+  presetsFor,
   type Member,
   type Activity,
 } from "./presence/store.js";
@@ -288,6 +293,35 @@ function parseActivities(x: unknown): Activity[] {
   });
 }
 
+// Call-type presets, two-way: the overlay reads the catalog at boot
+// (`customized` says whether the member ever saved one — false means these
+// are just the defaults and the overlay's local catalog should win)…
+app.get("/api/presence/presets", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  res.json({ presets: presetsFor(member), customized: !!member.presets });
+});
+
+// …and mirrors its catalog here on every edit so the Telegram bot's /up
+// picker offers the same options. Replaces the list.
+app.post("/api/presence/presets", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  if (!Array.isArray(req.body?.presets)) {
+    res.status(400).json({
+      error: "bad_request",
+      message: "Body must be { presets: [{label, visibleTo?, durationMinutes?}] }.",
+    });
+    return;
+  }
+  const presets = parseActivities(req.body.presets).map(({ label, visibleTo, durationMinutes }) => ({
+    label,
+    visibleTo,
+    durationMinutes,
+  }));
+  res.json({ presets: setPresets(member, presets) });
+});
+
 app.post("/api/presence/signal", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
@@ -349,6 +383,44 @@ app.post("/api/presence/call-accept", (req, res) => {
   res.json({ url: result.url, requesterNotified: result.delivered });
 });
 
+// Coordination opportunities: post a proposal ("climbing Saturday?") to all
+// your friends, one friend, or a chosen group. Audience is enforced
+// server-side; only the poster can take a post down early.
+app.post("/api/presence/opportunities", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  const { text, audience, minutes } = req.body ?? {};
+  if (typeof text !== "string" || !text.trim()) {
+    res.status(400).json({
+      error: "bad_request",
+      message: 'Body must be { text: string, audience?: "all" | memberId[], minutes?: number }.',
+    });
+    return;
+  }
+  const aud = Array.isArray(audience)
+    ? audience.filter((v: unknown): v is string => typeof v === "string").slice(0, 100)
+    : "all";
+  const mins = typeof minutes === "number" && Number.isFinite(minutes) ? minutes : undefined;
+  const result = postOpportunity(member, text, aud, mins);
+  if (!result.ok) {
+    res
+      .status(result.error === "too_fast" || result.error === "too_many" ? 429 : 400)
+      .json({ error: result.error });
+    return;
+  }
+  res.status(201).json({ opportunity: result.opportunity });
+});
+
+app.delete("/api/presence/opportunities/:id", (req, res) => {
+  const member = presenceMember(req, res);
+  if (!member) return;
+  if (!removeOpportunity(member, req.params.id)) {
+    res.status(404).json({ error: "not_found", message: "Not one of your posts." });
+    return;
+  }
+  res.sendStatus(204);
+});
+
 app.post("/api/presence/ping", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
@@ -375,7 +447,11 @@ app.delete("/api/presence/signal", (req, res) => {
 app.get("/api/presence/roster", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
-  res.json({ members: roster(member), callLink: config.huddleCallLink });
+  res.json({
+    members: roster(member),
+    opportunities: opportunitiesFor(member),
+    callLink: config.huddleCallLink,
+  });
 });
 
 app.get("/api/presence/stream", (req, res) => {
@@ -389,7 +465,11 @@ app.get("/api/presence/stream", (req, res) => {
   const send = (event: string, data: unknown) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  send("roster", { members: roster(member), callLink: config.huddleCallLink });
+  send("roster", {
+    members: roster(member),
+    opportunities: opportunitiesFor(member),
+    callLink: config.huddleCallLink,
+  });
   const unsubscribe = subscribe(send, member.id);
   const ping = setInterval(() => send("ping", {}), 20_000);
   req.on("close", () => {
