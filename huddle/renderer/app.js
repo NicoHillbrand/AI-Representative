@@ -809,7 +809,8 @@ $("self-extend-btn").addEventListener("click", () => setAvailable(chosenMinutes(
 $("self-clear-btn").addEventListener("click", clearSignal);
 
 $("min-btn").addEventListener("click", () => window.huddle.minimizeWindow());
-$("close-btn").addEventListener("click", () => window.huddle.quitApp());
+// Close-to-tray, like other tray apps: quitting lives in the tray menu.
+$("close-btn").addEventListener("click", () => window.huddle.hideWindow());
 $("settings-btn").addEventListener("click", () => {
   if (cfg.deviceToken) openSettings();
 });

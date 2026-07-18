@@ -118,7 +118,6 @@ ipcMain.on("minimize-window", () => {
   win.setSkipTaskbar(false); // taskbar tile while minimized, so it's findable
   win.minimize();
 });
-ipcMain.on("quit-app", () => app.quit());
 // The renderer reports its natural content height so the window hugs the
 // content (no dead space under a short friends list).
 ipcMain.on("resize-window", (_e, height) => {
