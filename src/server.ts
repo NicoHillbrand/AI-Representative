@@ -223,17 +223,22 @@ app.post("/api/presence/signal", (req, res) => {
   res.json(entry);
 });
 
-// Call handshake: request → accept → a fresh room is minted from the
-// configured template and pushed to both sides.
+// Call handshake: request (optionally carrying the requester's own room
+// link, e.g. a Google Meet) → accept → the link, or a room minted from the
+// configured template, is pushed to both sides.
 app.post("/api/presence/call-request", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
-  const { toMemberId } = req.body ?? {};
+  const { toMemberId, link } = req.body ?? {};
   if (typeof toMemberId !== "string") {
-    res.status(400).json({ error: "bad_request", message: "Body must be { toMemberId: string }." });
+    res.status(400).json({ error: "bad_request", message: "Body must be { toMemberId: string, link?: string }." });
     return;
   }
-  const result = requestCall(member, toMemberId);
+  if (link !== undefined && (typeof link !== "string" || !/^https:\/\/\S+$/.test(link) || link.length > 400)) {
+    res.status(400).json({ error: "bad_request", message: "link must be an https:// URL (max 400 chars)." });
+    return;
+  }
+  const result = requestCall(member, toMemberId, link);
   if (!result.ok) {
     res.status(result.error === "too_fast" ? 429 : 400).json({ error: result.error });
     return;
@@ -250,13 +255,13 @@ app.post("/api/presence/call-accept", (req, res) => {
     return;
   }
   const room = randomBytes(6).toString("base64url").toLowerCase().replace(/[^a-z0-9]/g, "x");
-  const url = config.huddleCallLink.replace("{room}", room);
-  const result = acceptCall(member, fromMemberId, url);
+  const fallbackUrl = config.huddleCallLink.replace("{room}", room);
+  const result = acceptCall(member, fromMemberId, fallbackUrl);
   if (!result.ok) {
     res.status(400).json({ error: result.error });
     return;
   }
-  res.json({ url, requesterNotified: result.delivered });
+  res.json({ url: result.url, requesterNotified: result.delivered });
 });
 
 app.post("/api/presence/ping", (req, res) => {

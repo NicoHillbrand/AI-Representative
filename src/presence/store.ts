@@ -257,30 +257,35 @@ export const pingMember = (from: Member, toMemberId: string) =>
   sendDirect("ping-from", from, toMemberId, {});
 
 // --- call handshake ------------------------------------------------------------
-// A call only happens by mutual consent: A requests, B accepts, THEN a room
-// is minted and pushed to both. Requests expire quickly.
-const pendingCalls = new Map<string, number>(); // "fromId>toId" -> expiresAt
+// A call only happens by mutual consent: A requests (optionally attaching
+// their own room link, e.g. a personal Google Meet), B accepts, THEN the
+// link — or a room minted from the server template as fallback — is pushed
+// to both. Requests expire quickly.
+const pendingCalls = new Map<string, { expiresAt: number; link?: string }>(); // "fromId>toId"
 const CALL_REQUEST_TTL = 2 * 60_000;
 
-export function requestCall(from: Member, toMemberId: string) {
+export function requestCall(from: Member, toMemberId: string, link?: string) {
   const result = sendDirect("call-request", from, toMemberId, {});
-  if (result.ok) pendingCalls.set(`${from.id}>${toMemberId}`, Date.now() + CALL_REQUEST_TTL);
+  if (result.ok)
+    pendingCalls.set(`${from.id}>${toMemberId}`, { expiresAt: Date.now() + CALL_REQUEST_TTL, link });
   return result;
 }
 
-/** Accept a pending request from `fromMemberId`; pushes the room to BOTH sides. */
+/** Accept a pending request from `fromMemberId`; pushes the requester's link
+ * (or `fallbackUrl` when they didn't attach one) to BOTH sides. */
 export function acceptCall(
   accepter: Member,
   fromMemberId: string,
-  url: string,
-): { ok: true; delivered: boolean } | { ok: false; error: string } {
+  fallbackUrl: string,
+): { ok: true; delivered: boolean; url: string } | { ok: false; error: string } {
   const key = `${fromMemberId}>${accepter.id}`;
-  const expires = pendingCalls.get(key);
-  if (!expires || Date.now() > expires) {
+  const pending = pendingCalls.get(key);
+  if (!pending || Date.now() > pending.expiresAt) {
     pendingCalls.delete(key);
     return { ok: false, error: "no_pending_request" };
   }
   pendingCalls.delete(key);
+  const url = pending.link ?? fallbackUrl;
   const requester = members.get(fromMemberId);
   if (!requester) return { ok: false, error: "unknown_member" };
   let delivered = false;
@@ -299,7 +304,7 @@ export function acceptCall(
       subscribers.delete(sub);
     }
   }
-  return { ok: true, delivered };
+  return { ok: true, delivered, url };
 }
 
 // Expire signals and tell everyone. Runs often enough that a lapsed window

@@ -3,7 +3,7 @@
 // porting the shell to Tauri later leaves this file untouched.
 const $ = (id) => document.getElementById(id);
 
-// cfg: { serverUrl, deviceToken, memberId, displayName, callLink,
+// cfg: { serverUrl, deviceToken, memberId, displayName, callLink, myCallLink,
 //        activities: [{id, label, visibleTo: "all"|[memberId], selected}],
 //        notify, quietPings }
 let cfg = {};
@@ -413,8 +413,16 @@ async function connectStream() {
             cfg.quietPings === true,
           );
         } else if (event === "call-start") {
-          // Both sides get this once the callee accepts.
-          toast(`📞 Call with ${payload.peer.displayName} — opening room…`, 15_000);
+          // Both sides get this once the callee accepts. The room opens in
+          // the browser, and the toast keeps the link copyable (e.g. to
+          // reshare over Messenger).
+          toast(`📞 Call with ${payload.peer.displayName} — opening room…`, 30_000, {
+            label: "Copy link",
+            onAction: () => {
+              window.huddle.copyText(payload.url);
+              toast("Link copied.", 4_000);
+            },
+          });
           window.huddle.openExternal(payload.url);
         }
       }
@@ -463,9 +471,14 @@ async function clearSignal() {
 }
 
 async function sendCallRequest(m) {
+  // Your own room link (e.g. Google Meet, settings → My call link) rides
+  // along; the server only falls back to minting a room without one.
   const res = await api("/api/presence/call-request", {
     method: "POST",
-    body: JSON.stringify({ toMemberId: m.memberId }),
+    body: JSON.stringify({
+      toMemberId: m.memberId,
+      ...(cfg.myCallLink ? { link: cfg.myCallLink } : {}),
+    }),
   });
   if (res.status === 429) return toast(`You just asked ${m.displayName} — give it a moment.`);
   if (!res.ok) return toast("Call request failed.");
@@ -571,6 +584,7 @@ let recordingShortcut = false;
 async function openSettings() {
   renderActivityEditor();
   $("shortcut-btn").textContent = await window.huddle.getShortcut();
+  $("set-call-link").value = cfg.myCallLink || "";
   $("set-quiet-pings").checked = cfg.quietPings === true;
   $("set-notify").checked = cfg.notify !== false;
   $("set-autostart").checked = await window.huddle.getAutostart();
@@ -666,6 +680,15 @@ $("open-manage").addEventListener("click", openManage);
 $("manage-back").addEventListener("click", () => showView("main"));
 $("signout-btn").addEventListener("click", () => signOut());
 $("shortcut-btn").addEventListener("click", startShortcutRecording);
+$("set-call-link").addEventListener("change", async (e) => {
+  const v = e.target.value.trim();
+  if (v && !/^https:\/\/\S+$/.test(v)) {
+    toast("Call link must be an https:// URL.");
+    e.target.value = cfg.myCallLink || "";
+    return;
+  }
+  cfg = await window.huddle.storeSet({ myCallLink: v || null });
+});
 $("set-quiet-pings").addEventListener("change", async (e) => {
   cfg = await window.huddle.storeSet({ quietPings: e.target.checked });
 });

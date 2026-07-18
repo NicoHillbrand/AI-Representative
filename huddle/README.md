@@ -35,9 +35,9 @@ same name on another machine attaches it to the same identity.
 | Go available | `+` in the header opens the composer: 30/60/90 min or custom (15–180), tick call types — each with its own optional duration (chips read "30min coworking" and count down) — plus an optional note |
 | Call type presets | click "Me (inactive)" (or settings → Call type presets…): add/remove and set per-preset visibility (everyone / specific friends). Defaults: get unstuck on a task, meditation, coworking, body doubling |
 | Ping a friend | 👋 on their row — toast + notification on their overlay (throttled; tells you if they're offline) |
-| Call a friend | `call` on an available friend's row sends a request; **they must accept** — then a fresh room (`HUDDLE_CALL_LINK` template, `{room}` replaced per call; default Jitsi) opens for both. Requests expire after 2 min and are single-use. |
+| Call a friend | `call` on an available friend's row sends a request; **they must accept** — then the room opens for both, with a **Copy link** button on the toast (e.g. to reshare over Messenger). The room is your own link if you set one (settings → My call link, e.g. a Google Meet), otherwise a fresh room from the server's `HUDDLE_CALL_LINK` template (`{room}` replaced per call; default Jitsi). Requests expire after 2 min and are single-use. |
 | Quick-set from tray | right-click tray → "Available for 60 min" |
-| Settings (⚙ in header) | call type presets, shortcut recorder, quiet pings (no sound), friend-available notifications, start at login, sign out |
+| Settings (⚙ in header) | call type presets, shortcut recorder, **my call link** (your Meet/Zoom/... room, sent with your call requests), quiet pings (no sound), friend-available notifications, start at login, sign out |
 
 True Google Meet room creation would require Google OAuth per user (Calendar
 API) — the `{room}` template keeps that swappable later without app changes.

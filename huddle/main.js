@@ -11,6 +11,7 @@ const {
   shell,
   Notification,
   nativeImage,
+  clipboard,
 } = require("electron");
 const { readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { join } = require("node:path");
@@ -110,6 +111,9 @@ ipcMain.handle("store-set", (_e, patch) => storeSet(patch));
 ipcMain.on("hide-window", () => win?.hide());
 ipcMain.on("open-external", (_e, url) => {
   if (typeof url === "string" && /^https?:\/\//.test(url)) shell.openExternal(url);
+});
+ipcMain.on("copy-text", (_e, text) => {
+  if (typeof text === "string") clipboard.writeText(text.slice(0, 1000));
 });
 ipcMain.on("notify", (_e, { title, body, silent }) => {
   if (!Notification.isSupported()) return;
