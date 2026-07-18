@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; style-src 'self'" />
+  <title>Huddle</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="panel">
+    <header id="drag-bar">
+      <span class="brand">huddle</span>
+      <span class="header-right">
+        <span id="conn-dot" class="dot off" title="Disconnected"></span>
+        <button id="interests-btn" class="ghost" title="Session interests">+</button>
+        <button id="settings-btn" class="ghost" title="Settings">⚙</button>
+      </span>
+    </header>
+
+    <!-- Onboarding: shown until a device token exists -->
+    <section id="onboarding" hidden>
+      <h1>Join your group</h1>
+      <label>Server
+        <input id="ob-server" type="url" placeholder="https://ai.nicohillbrand.com" />
+      </label>
+      <label>Invite code
+        <input id="ob-code" type="text" autocomplete="off" />
+      </label>
+      <label>Your name
+        <input id="ob-name" type="text" maxlength="40" autocomplete="off" />
+      </label>
+      <button id="ob-join" class="primary">Join</button>
+      <p id="ob-error" class="error" hidden></p>
+    </section>
+
+    <!-- Main view: your state, then friends. Nothing else. -->
+    <section id="main" hidden>
+      <div id="self-card">
+        <div id="self-off" class="self-status clickable" title="Manage your call types">
+          <span class="dot"></span>
+          <span class="muted">Me (inactive)</span>
+        </div>
+
+        <div id="self-on" hidden>
+          <div class="self-status">
+            <span class="dot on"></span>
+            <span id="self-countdown">Available</span>
+          </div>
+          <div id="self-acts-display" class="chips"></div>
+          <p id="self-note-display" class="muted" hidden></p>
+          <div class="row">
+            <button id="self-extend-btn">Extend</button>
+            <button id="self-clear-btn" class="danger">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="list-head">friends</div>
+      <div id="roster"></div>
+      <p id="roster-empty" class="muted center" hidden>Nobody's around right now.<br/>Be the first.</p>
+    </section>
+
+    <!-- Composer (opened via + in the header): duration, interests, go. -->
+    <section id="interests" hidden>
+      <div class="presets">
+        <button class="preset" data-mins="30">30m</button>
+        <button class="preset selected" data-mins="60">60m</button>
+        <button class="preset" data-mins="90">90m</button>
+        <input id="custom-mins" type="number" min="15" max="180" placeholder="min" title="Custom duration (15–180 min)" />
+      </div>
+      <div class="acts-head">up for:</div>
+      <div id="act-select"></div>
+      <input id="self-note" type="text" maxlength="80" placeholder="note (optional)" />
+      <button id="self-on-btn" class="primary big">I'm up for a call</button>
+      <button id="interests-back" class="ghost">back</button>
+    </section>
+
+    <!-- Call type manager (opened by clicking "Me", or from settings) -->
+    <section id="manage" hidden>
+      <h1>Call types</h1>
+      <p class="muted small">Your reusable presets. The chip controls who may see each one when you're available.</p>
+      <div id="act-editor"></div>
+      <div class="act-add">
+        <input id="act-add-input" type="text" maxlength="60" placeholder="add a call type…" />
+        <button id="act-add-btn">+</button>
+      </div>
+      <button id="manage-back" class="primary big">Done</button>
+    </section>
+
+    <!-- Settings -->
+    <section id="settings" hidden>
+      <h1>Settings</h1>
+
+      <div class="setting">
+        <button id="open-manage" class="big">Call type presets…</button>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Show / hide shortcut</div>
+        <div class="row">
+          <button id="shortcut-btn" class="mono"></button>
+        </div>
+        <p id="shortcut-hint" class="muted small">Click, then press the new combination. Esc cancels.</p>
+        <p id="shortcut-error" class="error small" hidden></p>
+      </div>
+
+      <label class="setting toggle">
+        <input id="set-quiet-pings" type="checkbox" />
+        <span>Quiet pings <span class="muted small">(no sound, still shown)</span></span>
+      </label>
+
+      <label class="setting toggle">
+        <input id="set-notify" type="checkbox" />
+        <span>Notify when a friend becomes available <span class="muted small">(only while you are too)</span></span>
+      </label>
+
+      <label class="setting toggle">
+        <input id="set-autostart" type="checkbox" />
+        <span>Start Huddle at login</span>
+      </label>
+
+      <div class="setting">
+        <button id="settings-back" class="primary big">Done</button>
+        <button id="signout-btn" class="danger big">Sign out (unpair this device)</button>
+      </div>
+    </section>
+
+    <div id="toasts"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

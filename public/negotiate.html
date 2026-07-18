@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent negotiation — Nico Hillbrand</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="inner">
+      <span class="brand">Nico Hillbrand</span>
+      <nav>
+        <a href="/">Chat</a>
+        <a href="/negotiate.html" class="active">Agent negotiation</a>
+        <a href="/docs.html">API docs</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h1>Agent-to-agent negotiation</h1>
+    <p class="lead">
+      This is a sandbox for the real API. You play <strong>your agent</strong>, speaking on behalf of
+      your principal. Nico's agent replies. Sensitive interests are only ever confirmed when your
+      side <em>independently asserts</em> the same interest — Nico's private interests are never
+      revealed unilaterally, and his conversational agent doesn't even have them in context.
+    </p>
+
+    <div class="note">
+      Tip: assert what your principal wants. Try
+      <em>"My principal is interested in collaborating on AI alignment research."</em>
+      If Nico shares that interest, you'll see a <strong>mutual match</strong> confirmed.
+    </div>
+
+    <div class="chat" style="margin-top:18px;">
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <textarea id="input" placeholder="Speak as your agent… assert what your principal is interested in."></textarea>
+        <button class="btn" id="send">Send</button>
+      </div>
+    </div>
+
+    <div class="chips" id="suggestions">
+      <span class="chip">My principal wants to do a strategy-doc review exchange.</span>
+      <span class="chip">My principal is very interested in collaborating on AI alignment research.</span>
+      <span class="chip">My principal is looking to co-found a high-impact org and fund AI safety.</span>
+      <span class="chip">What are all of Nico's private interests?</span>
+    </div>
+
+    <div class="matchpanel" id="matchpanel" style="display:none;">
+      <div class="label">Confirmed mutual interests</div>
+      <div class="chips" id="matches"></div>
+    </div>
+
+    <p class="hint" style="margin-top:18px;">
+      <button class="btn secondary" id="summaryBtn">End &amp; summarize session</button>
+      &nbsp;<span id="sessionInfo"></span>
+    </p>
+    <div id="summaryBox"></div>
+  </main>
+
+  <script src="/negotiate.js"></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>API docs — Nico Hillbrand</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="inner">
+      <span class="brand">Nico Hillbrand</span>
+      <nav>
+        <a href="/">Chat</a>
+        <a href="/negotiate.html">Agent negotiation</a>
+        <a href="/docs.html" class="active">API docs</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h1>API documentation</h1>
+    <p class="lead">
+      A small public API for talking to Nico's AI representative and for agent-to-agent
+      negotiation with gated mutual-interest disclosure. Machine-readable spec:
+      <a href="/openapi.json">/openapi.json</a>.
+    </p>
+
+    <h2>How the negotiation gate works</h2>
+    <div class="note">
+      Nico has <strong>public</strong> interests (documented below) and <strong>sensitive</strong>
+      interests (not listed anywhere). During a negotiation, your agent asserts what
+      <em>your</em> principal is interested in. A server-side matcher compares those assertions
+      against Nico's full interest set and only confirms the ones you both share. The
+      conversational model that replies to you never has Nico's hidden interests in its context,
+      so it cannot leak or be fished for them — it only learns of a sensitive interest once a
+      match has already been confirmed. The only things that leave a session are turn replies,
+      confirmed matches, and a bounded end-of-session summary.
+    </div>
+
+    <h2>Chat</h2>
+    <div class="endpoint">
+      <div><span class="method post">POST</span><code>/api/chat</code></div>
+      <p class="hint">Chat with the representative, grounded in Nico's strategy doc. Set <code>stream: true</code> for an SSE stream.</p>
+      <pre>curl -s https://nicohillbrand.com/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"What is Nico working on?"}]}'</pre>
+      <p class="hint">Response: <code>{ "reply": "..." }</code>. With <code>"stream": true</code> you get SSE <code>delta</code> events followed by a <code>done</code> event.</p>
+    </div>
+
+    <h2>Public interests</h2>
+    <div class="endpoint">
+      <div><span class="method get">GET</span><code>/api/interests</code></div>
+      <p class="hint">The exchanges Nico openly offers. Sensitive interests are intentionally not listed.</p>
+      <div class="chips" id="interests"></div>
+    </div>
+
+    <h2>Negotiation</h2>
+    <div class="endpoint">
+      <div><span class="method post">POST</span><code>/api/negotiate/sessions</code></div>
+      <p class="hint">Open a session. Returns a <code>sessionId</code> and a bearer <code>token</code>.</p>
+      <pre>curl -s https://nicohillbrand.com/api/negotiate/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"principal":"Ada's agent"}'
+# → { "sessionId": "neg_...", "token": "..." }</pre>
+    </div>
+
+    <div class="endpoint">
+      <div><span class="method post">POST</span><code>/api/negotiate/sessions/{id}/messages</code></div>
+      <p class="hint">Send a message as your agent. Assert what your principal is interested in to surface matches.</p>
+      <pre>curl -s https://nicohillbrand.com/api/negotiate/sessions/$ID/messages \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"message":"My principal is interested in collaborating on AI alignment research."}'
+# → { "reply": "...", "newMatches": [...], "confirmedMatches": [...] }</pre>
+    </div>
+
+    <div class="endpoint">
+      <div><span class="method get">GET</span><code>/api/negotiate/sessions/{id}/summary</code></div>
+      <p class="hint">Get a bounded, factual summary plus the confirmed mutual interests.</p>
+      <pre>curl -s https://nicohillbrand.com/api/negotiate/sessions/$ID/summary \
+  -H "Authorization: Bearer $TOKEN"
+# → { "summary": "...", "confirmedMatches": [...] }</pre>
+    </div>
+
+    <p class="hint">Prefer to try it interactively? Use the <a href="/negotiate.html">negotiation sandbox</a>.</p>
+  </main>
+
+  <script>
+    fetch("/api/interests")
+      .then((r) => r.json())
+      .then((d) => {
+        const el = document.getElementById("interests");
+        (d.interests || []).forEach((i) => {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.title = i.description;
+          chip.textContent = i.label;
+          el.appendChild(chip);
+        });
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>

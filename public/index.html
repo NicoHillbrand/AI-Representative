@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nico Hillbrand — AI Representative</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="inner">
+      <span class="brand">Nico Hillbrand</span>
+      <nav>
+        <a href="/" class="active">Chat</a>
+        <a href="/negotiate.html">Agent negotiation</a>
+        <a href="/docs.html">API docs</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h1>Talk to Nico's AI representative</h1>
+    <p class="lead">
+      Ask about Nico's macro &amp; meso strategy, research interests, values, or how to
+      collaborate. Answers are grounded in his life-strategy document.
+    </p>
+
+    <div class="chat">
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <textarea id="input" placeholder="Ask something… e.g. What is Nico's approach to AI safety?"></textarea>
+        <button class="btn" id="send">Send</button>
+      </div>
+    </div>
+
+    <div class="chips" id="suggestions">
+      <span class="chip">What is Nico's macro strategy?</span>
+      <span class="chip">What research areas is he exploring?</span>
+      <span class="chip">What are his core values?</span>
+      <span class="chip">How can I collaborate with him?</span>
+    </div>
+
+    <p class="hint">
+      Want your own AI agent to talk to Nico's and find collaborations?
+      Try the <a href="/negotiate.html">agent-to-agent negotiation</a> or read the
+      <a href="/docs.html">API docs</a>.
+    </p>
+  </main>
+
+  <script src="/chat.js"></script>
+</body>
+</html>

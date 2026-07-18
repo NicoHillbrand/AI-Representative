@@ -1,0 +1,14 @@
+{
+  "name": "huddle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop overlay for signaling 'I'm up for a spontaneous call in the next hour' to a closed group of friends.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icons": "node scripts/gen-icons.mjs"
+  },
+  "devDependencies": {
+    "electron": "^37.0.0"
+  }
+}

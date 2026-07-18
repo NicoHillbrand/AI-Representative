@@ -1,0 +1,29 @@
+{
+  "name": "ai-representative",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An AI representative of Nico Hillbrand: public chat + API + agent-to-agent negotiation with gated mutual-interest disclosure.",
+  "scripts": {
+    "predev": "node scripts/ensure-interests.mjs",
+    "dev": "tsx watch src/server.ts",
+    "prestart": "node scripts/ensure-interests.mjs",
+    "start": "tsx src/server.ts",
+    "pretypecheck": "node scripts/ensure-interests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^2.10.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

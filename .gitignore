@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.local
+dist/
+*.log
+# Huddle presence: paired members + device tokens
+data/
+# The real interest registry — its `hidden` entries are private by definition.
+# Bootstrapped from content/interests.example.ts on first run.
+content/interests.ts
