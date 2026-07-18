@@ -83,8 +83,8 @@ An Electron tray overlay in [`huddle/`](huddle/README.md); the presence backend
   mutual-interest protocol with `/negotiate` (confirmed matches + summary,
   same two-plane engine as the API), and Huddle members who link it (overlay
   settings) get notifications there when their overlay is closed — including
-  accepting call requests — and can go available by messaging the bot in
-  plain language ("up for coworking the next hour").
+  accepting call requests — and can go available with `/up` (bare for a
+  preset picker, or `/up 60 coworking`).
 
 To run it: `cd huddle && npm install && npm start`, then enter the server URL
 and the friend code of whoever invited you. Full details in

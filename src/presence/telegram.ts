@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { Type } from "@google/genai";
 import { config } from "../config.js";
-import { extractJson, type ChatMessage } from "../llm.js";
+import { type ChatMessage } from "../llm.js";
 import { respond } from "../representative.js";
 import { createSession, type Session } from "../negotiation/store.js";
 import { processTurn, summarize } from "../negotiation/negotiate.js";
@@ -36,10 +35,9 @@ import {
  *
  *  1. For LINKED Huddle members (overlay settings → Telegram): out-of-overlay
  *     notifications (pings, call requests with an inline Accept button,
- *     friends going available, room links), and setting your availability by
- *     message — either `/up 60 coworking` or plain language ("up for a call
- *     about the eval project in the next hour"), parsed by the cheap
- *     classifier model.
+ *     friends going available, room links), and setting your availability via
+ *     explicit commands (`/up`, the picker, `/clear`). Free text is never
+ *     interpreted as availability — it always goes to the representative.
  *  2. For anyone else: chatting with the representative, same as the web UI.
  *
  * Relay rule: Telegram only fires when the member did NOT get the event on a
@@ -101,49 +99,8 @@ function onPresenceEvent(e: PresenceEvent): void {
   }
 }
 
-// --- natural-language availability ----------------------------------------------
-// Exported for tests — the digit-loop workaround (string minutes) is easy to
-// regress by "simplifying" the schema back to numbers.
-export const INTENT_SYSTEM = `You read one Telegram message a user sent to their "Huddle" bot and decide what they want.
-Huddle lets friends signal "I'm up for a spontaneous call in the next N minutes", optionally with topics/activities and a short note.
-
-There are TWO independent times, do not conflate them (all minutes are digit strings like "60"):
-- windowMinutes: how long the person is REACHABLE (the offer window). "in the next hour" → "60".
-- durationMinutes (per activity): how long the CALL ITSELF would be. "a 5-minute call about X in the next hour" → windowMinutes "60", activities [{label:"X", durationMinutes:"5"}].
-
-intents:
-- "set_availability": they're saying they are (or want to be) available for a call. Extract windowMinutes (default "60") and activities: EVERY topic or activity they name becomes one {label, durationMinutes?} entry (durationMinutes only when a call length is stated). note = any remaining flavor text, short.
-- "clear_availability": they say they're done / no longer available.
-- "chat": anything else — a question or conversation not about their availability.`;
-
-export const INTENT_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    intent: { type: Type.STRING, enum: ["set_availability", "clear_availability", "chat"] },
-    // Minutes as STRINGS on purpose: with NUMBER/INTEGER fields Gemini's
-    // structured output can loop digits ("60.000..." / "60000...") until
-    // MAX_TOKENS when the message contains two different durations. A quoted
-    // string terminates cleanly; we parseInt in code.
-    windowMinutes: { type: Type.STRING, description: "minutes, digits only, e.g. \"60\"" },
-    activities: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          label: { type: Type.STRING },
-          durationMinutes: { type: Type.STRING, description: "minutes, digits only, e.g. \"5\"" },
-        },
-        required: ["label"],
-      },
-    },
-    note: { type: Type.STRING },
-  },
-  // activities is required (empty array when none): optional, the model
-  // frequently stopped emitting after windowMinutes and dropped the topics.
-  required: ["intent", "activities"],
-};
-
-interface IntentActivity {
+// --- availability ----------------------------------------------------------------
+interface ActivityInput {
   label: string;
   durationMinutes?: number;
   /** Per-friend visibility, when known (preset picker); defaults to "all". */
@@ -152,36 +109,10 @@ interface IntentActivity {
   visibleToGroups?: string[];
 }
 
-interface Intent {
-  intent: "set_availability" | "clear_availability" | "chat";
-  windowMinutes?: number;
-  activities?: IntentActivity[];
-  note?: string;
-}
-
-const asMinutes = (v: unknown): number | undefined => {
-  const n = parseInt(String(v ?? ""), 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-};
-
-/** Raw schema shape (string minutes) → typed Intent. */
-export function toIntent(raw: any): Intent {
-  return {
-    intent: raw.intent,
-    windowMinutes: asMinutes(raw.windowMinutes),
-    activities: Array.isArray(raw.activities)
-      ? raw.activities
-          .filter((a: any) => typeof a?.label === "string" && a.label.trim())
-          .map((a: any) => ({ label: a.label.trim(), durationMinutes: asMinutes(a.durationMinutes) }))
-      : undefined,
-    note: typeof raw.note === "string" && raw.note.trim() ? raw.note.trim() : undefined,
-  };
-}
-
 function applyAvailability(
   member: Member,
   mins: number | undefined,
-  activities: IntentActivity[],
+  activities: ActivityInput[],
   note?: string,
 ): string {
   const entry = setSignal(
@@ -207,7 +138,7 @@ function applyAvailability(
 // Bare /up shows the member's call-type presets — the same catalog the
 // overlay composer offers, synced via POST /api/presence/presets — as
 // toggleable inline buttons, so people can SEE and SELECT the options
-// instead of typing them. Quick paths ("/up 45 note", plain language) skip it.
+// instead of typing them. The quick path ("/up 45 note") skips it.
 interface Picker {
   /** Snapshot at open time — keeps callback indices valid if presets change. */
   presets: Preset[];
@@ -409,7 +340,7 @@ const NEGOTIATE_HELP =
 function commandOverview(member: Member | undefined): string {
   return member
     ? `/up — pick from your call types and go available (buttons)
-/up [minutes] [note] — quick set, no picker (or just say it in plain words)
+/up [minutes] [note] — quick set, no picker
 /presets — see or edit your call types
 /status — who's up for a call, plus open posts
 /clear — stop being available
@@ -795,33 +726,10 @@ async function onMessage(msg: any): Promise<void> {
     return;
   }
 
-  // Free text. Linked members get intent detection (availability vs chat);
-  // everyone else talks straight to the representative.
-  if (member) {
-    try {
-      const intent = toIntent(
-        await extractJson<any>({
-          system: INTENT_SYSTEM,
-          messages: [{ role: "user", content: text.slice(0, 1000) }],
-          schema: INTENT_SCHEMA,
-        }),
-      );
-      if (intent.intent === "set_availability") {
-        await dm(
-          chatId,
-          applyAvailability(member, intent.windowMinutes, intent.activities ?? [], intent.note),
-        );
-        return;
-      }
-      if (intent.intent === "clear_availability") {
-        clearSignal(member);
-        await dm(chatId, "Cleared — you're no longer shown as available.");
-        return;
-      }
-    } catch (err) {
-      console.error("telegram intent parse failed, falling through to chat", err);
-    }
-  } else if (!hinted.has(chatId)) {
+  // Free text always talks to the representative. Availability only changes
+  // via explicit commands (/up, the picker, /clear) — a casual message must
+  // never flip someone's status.
+  if (!member && !hinted.has(chatId)) {
     hinted.add(chatId);
     await dm(
       chatId,
