@@ -47,7 +47,7 @@ let tray = null;
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 380,
+    width: 320,
     height: 600,
     show: true,
     frame: false,
