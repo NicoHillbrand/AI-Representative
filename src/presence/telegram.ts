@@ -373,7 +373,7 @@ async function handlePending(chatId: number, member: Member, p: Pending, text: s
       await dm(chatId, "Nothing to post — send /post again when you're ready.");
       return;
     }
-    await openPostPicker(chatId, member, body);
+    await openPostWizard(chatId, member, body);
     return;
   }
   if (p.kind === "uw-activity") {
@@ -442,59 +442,174 @@ async function handlePending(chatId: number, member: Member, p: Pending, text: s
   }
 }
 
-// --- /post picker ----------------------------------------------------------------
-// Bare /post asks for the text, then this chooses audience + how long it stands.
-interface PostPicker {
+// --- /post wizard ----------------------------------------------------------------
+// Bare /post captures the text (post-text prompt), then walks the poster through
+// it ONE STEP PER MESSAGE, like /up: audience → timing. Timing is either
+// OPEN-ENDED ("sometime" — people arrange it with you; stands for a chosen
+// duration) or a SET TIME (a day + part of day → a scheduled startsAt/endsAt).
+interface PostWizard {
   text: string;
   friends: { memberId: string; displayName: string }[];
   groups: FriendGroup[];
+  audEveryone: boolean;
   audFriends: Set<number>;
   audGroups: Set<number>;
-  mins: number;
+  scheduleDay?: number; // chosen day (local midnight ms), set-time path
+  stepMessageId?: number;
 }
-const postPickers = new Map<number, PostPicker>();
-const POST_WINDOWS = [60, 240, 720, 1440]; // 1 h, 4 h, 12 h, 1 day
+const postWizards = new Map<number, PostWizard>();
 
-function postPickerKeyboard(p: PostPicker) {
+// Open-ended durations (minutes): 4 h, 1 day, 3 days, 1 week.
+const POST_DURATIONS: { mins: number; label: string }[] = [
+  { mins: 240, label: "4 hours" },
+  { mins: 1440, label: "1 day" },
+  { mins: 4320, label: "3 days" },
+  { mins: 10080, label: "1 week" },
+];
+// Parts of a day → a start/end hour window (local server time).
+const POST_TIMES: { key: string; label: string; s: number; e: number }[] = [
+  { key: "morning", label: "🌅 Morning (9–12)", s: 9, e: 12 },
+  { key: "midday", label: "☀️ Midday (12–2)", s: 12, e: 14 },
+  { key: "afternoon", label: "🌤 Afternoon (2–5)", s: 14, e: 17 },
+  { key: "evening", label: "🌆 Evening (6–9)", s: 18, e: 21 },
+  { key: "night", label: "🌙 Night (9–11)", s: 21, e: 23 },
+  { key: "allday", label: "🗓 All day (9–9)", s: 9, e: 21 },
+];
+
+function dayMidnight(offset: number): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + offset);
+  return d.getTime();
+}
+function dayLabel(offset: number): string {
+  if (offset === 0) return "Today";
+  if (offset === 1) return "Tomorrow";
+  return new Date(dayMidnight(offset)).toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function postAudienceKeyboard(w: PostWizard) {
   const rows: { text: string; callback_data: string }[][] = [];
-  for (const [i, g] of p.groups.entries())
-    rows.push([{ text: `${p.audGroups.has(i) ? "☑" : "☐"} #${g.name}`, callback_data: `post:ag:${i}` }]);
-  for (let i = 0; i < p.friends.length; i += 2) {
+  rows.push([{ text: `${w.audEveryone ? "☑" : "☐"} 🌍 Everyone`, callback_data: "pw:ae" }]);
+  for (const [i, g] of w.groups.entries())
+    rows.push([{ text: `${w.audGroups.has(i) ? "☑" : "☐"} #${g.name}`, callback_data: `pw:g:${i}` }]);
+  for (let i = 0; i < w.friends.length; i += 2) {
     const row: { text: string; callback_data: string }[] = [];
     for (const j of [i, i + 1]) {
-      const f = p.friends[j];
-      if (f) row.push({ text: `${p.audFriends.has(j) ? "☑" : "☐"} ${f.displayName}`, callback_data: `post:af:${j}` });
+      const f = w.friends[j];
+      if (f) row.push({ text: `${w.audFriends.has(j) ? "☑" : "☐"} ${f.displayName}`, callback_data: `pw:f:${j}` });
     }
     rows.push(row);
   }
-  rows.push(
-    POST_WINDOWS.map((m) => ({
-      text: p.mins === m ? `· ${fmtMins(m)} ·` : fmtMins(m),
-      callback_data: `post:w:${m}`,
-    })),
-  );
-  rows.push([
-    { text: "📣 Post", callback_data: "post:go" },
-    { text: "Cancel", callback_data: "post:x" },
-  ]);
+  rows.push([{ text: "Next →", callback_data: "pw:next" }, { text: "Cancel", callback_data: "pw:x" }]);
   return { inline_keyboard: rows };
 }
 
-async function openPostPicker(chatId: number, member: Member, text: string): Promise<void> {
-  const picker: PostPicker = {
+async function openPostWizard(chatId: number, member: Member, text: string): Promise<void> {
+  const w: PostWizard = {
     text,
     friends: friendEntriesOf(member),
     groups: groupsFor(member),
+    audEveryone: true,
     audFriends: new Set(),
     audGroups: new Set(),
-    mins: 240,
   };
-  postPickers.set(chatId, picker);
-  await dm(
+  postWizards.set(chatId, w);
+  const sent = await dm(
     chatId,
-    `📣 "${text}"\nWho should see it? Tick friends/groups, or leave blank for all friends. Pick how long it stands, then Post.`,
-    { reply_markup: postPickerKeyboard(picker) },
+    `📣 "${text}"\nWho should see it? Everyone by default — or tick friends/groups, then Next:`,
+    { reply_markup: postAudienceKeyboard(w) },
   );
+  w.stepMessageId = sent?.message_id;
+}
+
+async function sendPostTimingStep(chatId: number, w: PostWizard): Promise<void> {
+  const rows = [
+    [{ text: "🗓 Sometime — people arrange it with you", callback_data: "pw:tnow" }],
+    [{ text: "📅 At a set time", callback_data: "pw:tset" }],
+    [{ text: "Cancel", callback_data: "pw:x" }],
+  ];
+  const sent = await dm(chatId, "When? Keep it open-ended, or pin a set time:", {
+    reply_markup: { inline_keyboard: rows },
+  });
+  w.stepMessageId = sent?.message_id;
+}
+
+async function sendPostDurationStep(chatId: number, w: PostWizard): Promise<void> {
+  const rows = [
+    POST_DURATIONS.map((d) => ({ text: d.label, callback_data: `pw:d:${d.mins}` })),
+    [{ text: "Cancel", callback_data: "pw:x" }],
+  ];
+  const sent = await dm(chatId, "How long should the post stand?", { reply_markup: { inline_keyboard: rows } });
+  w.stepMessageId = sent?.message_id;
+}
+
+async function sendPostDayStep(chatId: number, w: PostWizard): Promise<void> {
+  const rows: { text: string; callback_data: string }[][] = [];
+  for (let off = 0; off < 7; off += 2) {
+    const row: { text: string; callback_data: string }[] = [];
+    for (const o of [off, off + 1]) if (o < 7) row.push({ text: dayLabel(o), callback_data: `pw:day:${o}` });
+    rows.push(row);
+  }
+  rows.push([{ text: "Cancel", callback_data: "pw:x" }]);
+  const sent = await dm(chatId, "Which day?", { reply_markup: { inline_keyboard: rows } });
+  w.stepMessageId = sent?.message_id;
+}
+
+async function sendPostTimeStep(chatId: number, w: PostWizard): Promise<void> {
+  const now = Date.now();
+  const isToday = w.scheduleDay === dayMidnight(0);
+  const opts = isToday
+    ? POST_TIMES.filter((t) => (w.scheduleDay ?? 0) + t.s * 3_600_000 > now - 60_000)
+    : POST_TIMES;
+  const list = opts.length ? opts : POST_TIMES; // late-night fallback; backend guards the past
+  const rows = list.map((t) => [{ text: t.label, callback_data: `pw:tod:${t.key}` }]);
+  rows.push([{ text: "Cancel", callback_data: "pw:x" }]);
+  const sent = await dm(chatId, "What time of day?", { reply_markup: { inline_keyboard: rows } });
+  w.stepMessageId = sent?.message_id;
+}
+
+/** Resolve the wizard's audience, post it, and return the confirmation text. */
+function postFromWizard(
+  member: Member,
+  w: PostWizard,
+  opts: { minutes?: number; when?: { startsAt: number; endsAt?: number } },
+): string {
+  const ids = new Set<string>();
+  for (const i of w.audGroups) for (const id of w.groups[i]?.memberIds ?? []) ids.add(id);
+  for (const i of w.audFriends) {
+    const f = w.friends[i];
+    if (f) ids.add(f.memberId);
+  }
+  const restricted = !w.audEveryone && ids.size > 0;
+  const audienceLabel =
+    !w.audEveryone && w.audGroups.size === 1 && w.audFriends.size === 0
+      ? w.groups[[...w.audGroups][0]]?.name
+      : undefined;
+  const result = postOpportunity(member, w.text, restricted ? [...ids] : "all", opts.minutes, audienceLabel, opts.when);
+  if (!result.ok) {
+    return result.error === "too_many"
+      ? "You already have 5 open posts — they expire on their own."
+      : result.error === "too_fast"
+        ? "Easy — you just posted. Give it a moment."
+        : result.error === "bad_time"
+          ? "That time has already passed (or is too far out) — send /post to try again."
+          : "Couldn't post that.";
+  }
+  const o = result.opportunity;
+  const audText = !restricted
+    ? "all your friends"
+    : audienceLabel
+      ? `${audienceLabel} (${ids.size} friend${ids.size === 1 ? "" : "s"})`
+      : `${ids.size} friend${ids.size === 1 ? "" : "s"}`;
+  const when = o.startsAt
+    ? `📅 ${fmtWhen(new Date(o.startsAt).getTime(), o.endsAt ? new Date(o.endsAt).getTime() : undefined)}`
+    : `stands for ${fmtMins(Math.round((new Date(o.expiresAt).getTime() - Date.now()) / 60_000))}`;
+  return `📣 Posted to ${audText} (${when}): "${o.text}"`;
 }
 
 // --- /presets manager ------------------------------------------------------------
@@ -1215,65 +1330,99 @@ async function onCallback(cb: any): Promise<void> {
     return;
   }
 
-  // /post picker: post:af/ag toggle audience, post:w window, post:go, post:x.
-  if (member && chatId !== undefined && action === "post") {
-    const p = postPickers.get(chatId);
-    if (!p) {
-      await answer("This expired — send /post again.");
+  // /post wizard (pw:*). Audience multi-selects in place → Next; timing is
+  // open-ended (pw:tnow → duration) or a set time (pw:tset → day → part of
+  // day). pw:x cancels.
+  if (member && chatId !== undefined && action === "pw") {
+    const w = postWizards.get(chatId);
+    if (!w) {
+      await answer("This wizard expired — send /post again.");
       return;
     }
-    if (args[0] === "x") {
-      postPickers.delete(chatId);
+    const done = (text: string) =>
+      messageId !== undefined
+        ? tg("editMessageText", { chat_id: chatId, message_id: messageId, text })
+        : dm(chatId, text);
+    const sub = args[0];
+    if (sub === "x") {
+      postWizards.delete(chatId);
       await answer();
-      if (messageId !== undefined)
-        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "Okay — not posting." });
+      await done("Okay — not posting.");
       return;
     }
-    if (args[0] === "go") {
-      postPickers.delete(chatId);
-      const ids = new Set<string>();
-      for (const i of p.audGroups) for (const id of p.groups[i]?.memberIds ?? []) ids.add(id);
-      for (const i of p.audFriends) if (p.friends[i]) ids.add(p.friends[i].memberId);
-      const restricted = ids.size > 0;
-      // A single pure group keeps its name on the post ("to close").
-      const audienceLabel =
-        p.audGroups.size === 1 && p.audFriends.size === 0 ? p.groups[[...p.audGroups][0]]?.name : undefined;
-      const result = postOpportunity(member, p.text, restricted ? [...ids] : "all", p.mins, audienceLabel);
+    if (sub === "next") {
       await answer();
-      let msg: string;
-      if (!result.ok) {
-        msg =
-          result.error === "too_many"
-            ? "You already have 5 open posts."
-            : result.error === "too_fast"
-              ? "Easy — you just posted. Give it a moment."
-              : "Couldn't post that.";
-      } else {
-        const mins = Math.round((new Date(result.opportunity.expiresAt).getTime() - Date.now()) / 60_000);
-        const audText = !restricted
-          ? "all your friends"
-          : audienceLabel
-            ? `${audienceLabel} (${ids.size} friend${ids.size === 1 ? "" : "s"})`
-            : `${ids.size} friend${ids.size === 1 ? "" : "s"}`;
-        msg = `📣 Posted to ${audText} (stands for ${fmtMins(mins)}): "${result.opportunity.text}"`;
+      await done(`📣 "${w.text}"`);
+      await sendPostTimingStep(chatId, w);
+      return;
+    }
+    if (sub === "tnow") {
+      await answer();
+      await done("🗓 Open-ended — people arrange it with you.");
+      await sendPostDurationStep(chatId, w);
+      return;
+    }
+    if (sub === "tset") {
+      await answer();
+      await done("📅 At a set time.");
+      await sendPostDayStep(chatId, w);
+      return;
+    }
+    if (sub === "d") {
+      postWizards.delete(chatId);
+      await answer();
+      await done(postFromWizard(member, w, { minutes: parseInt(args[1] ?? "", 10) }));
+      return;
+    }
+    if (sub === "day") {
+      const off = parseInt(args[1] ?? "", 10);
+      if (!Number.isFinite(off)) {
+        await answer();
+        return;
       }
-      if (messageId !== undefined) await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: msg });
-      else await dm(chatId, msg);
+      w.scheduleDay = dayMidnight(off);
+      await answer();
+      await done(`📅 ${dayLabel(off)}`);
+      await sendPostTimeStep(chatId, w);
       return;
     }
-    if (args[0] === "af") {
-      const i = parseInt(args[1] ?? "", 10);
-      if (p.friends[i]) p.audFriends.has(i) ? p.audFriends.delete(i) : p.audFriends.add(i);
-    } else if (args[0] === "ag") {
-      const i = parseInt(args[1] ?? "", 10);
-      if (p.groups[i]) p.audGroups.has(i) ? p.audGroups.delete(i) : p.audGroups.add(i);
-    } else if (args[0] === "w") {
-      const m = parseInt(args[1] ?? "", 10);
-      if (POST_WINDOWS.includes(m)) p.mins = m;
+    if (sub === "tod") {
+      postWizards.delete(chatId);
+      const t = POST_TIMES.find((x) => x.key === args[1]);
+      await answer();
+      if (!t || w.scheduleDay === undefined) {
+        await done("Something went wrong — send /post to try again.");
+        return;
+      }
+      await done(
+        postFromWizard(member, w, {
+          when: { startsAt: w.scheduleDay + t.s * 3_600_000, endsAt: w.scheduleDay + t.e * 3_600_000 },
+        }),
+      );
+      return;
     }
+    // Audience toggles — re-render in place.
+    if (sub === "ae") {
+      w.audEveryone = true;
+      w.audFriends.clear();
+      w.audGroups.clear();
+    } else if (sub === "g") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (w.groups[i]) {
+        w.audEveryone = false;
+        w.audGroups.has(i) ? w.audGroups.delete(i) : w.audGroups.add(i);
+      }
+    } else if (sub === "f") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (w.friends[i]) {
+        w.audEveryone = false;
+        w.audFriends.has(i) ? w.audFriends.delete(i) : w.audFriends.add(i);
+      }
+    }
+    if (!w.audFriends.size && !w.audGroups.size) w.audEveryone = true;
     await answer();
     if (messageId !== undefined)
-      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: postPickerKeyboard(p) });
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: postAudienceKeyboard(w) });
     return;
   }
 
