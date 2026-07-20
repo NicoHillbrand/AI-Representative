@@ -23,6 +23,13 @@ const openGroupPickers = new Set(); // group names with the member picker expand
 let streamAbort = null;
 let backoffMs = 1000;
 let reconnectTimer = null;
+// Watchdog: a fetch-based SSE connection can go half-open (laptop sleep, a
+// Wi-Fi switch, a proxy idle-timeout) with the reader neither delivering bytes
+// nor erroring — so the catch that reconnects never fires and the dot stays
+// green on a dead stream. The server pings every 20s; if we see nothing at all
+// (not even a ping) for STALL_MS, we treat the stream as dead and reconnect.
+let stallTimer = null;
+const STALL_MS = 45_000;
 const openPickers = new Set(); // activity ids with the visibility picker expanded
 
 const DEFAULT_ACTIVITIES = [
@@ -633,17 +640,32 @@ function applyUpdate(entry) {
 
 async function connectStream() {
   clearTimeout(reconnectTimer);
+  clearTimeout(stallTimer);
   streamAbort?.abort();
-  streamAbort = new AbortController();
+  // Capture our own controller so the watchdog's reconnect (which aborts it)
+  // is recognised as a deliberate supersede in the catch, not a real error.
+  const controller = (streamAbort = new AbortController());
+  // No bytes for STALL_MS means the connection is dead-but-silent — abort it
+  // (that unblocks reader.read()) and start fresh.
+  const armStall = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      console.warn("huddle: stream stalled, reconnecting");
+      setConnected(false);
+      controller.abort();
+      connectStream();
+    }, STALL_MS);
+  };
   try {
     const res = await fetch(cfg.serverUrl + "/api/presence/stream", {
       headers: authHeaders(),
-      signal: streamAbort.signal,
+      signal: controller.signal,
     });
     if (res.status === 401) return signOut("This device was unpaired. Join again.");
     if (!res.ok) throw new Error(`stream ${res.status}`);
     setConnected(true);
     backoffMs = 1000;
+    armStall();
     console.log("huddle: stream connected");
 
     const reader = res.body.getReader();
@@ -651,6 +673,7 @@ async function connectStream() {
     let buf = "";
     for (;;) {
       const { done, value } = await reader.read();
+      armStall(); // any bytes (including the server's 20s ping) prove liveness
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       let sep;
@@ -743,7 +766,10 @@ async function connectStream() {
     }
     throw new Error("stream ended");
   } catch (err) {
-    if (streamAbort.signal.aborted) return;
+    clearTimeout(stallTimer);
+    // Superseded by a newer connectStream (manual reconnect or the watchdog) —
+    // that call owns the reconnect, so don't schedule a competing one.
+    if (controller.signal.aborted) return;
     setConnected(false);
     reconnectTimer = setTimeout(connectStream, backoffMs);
     backoffMs = Math.min(backoffMs * 2, 30_000);
