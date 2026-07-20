@@ -49,7 +49,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 380,
     height: 600,
-    show: false,
+    show: true,
     frame: false,
     resizable: false,
     alwaysOnTop: true,
@@ -60,6 +60,13 @@ function createWindow() {
     },
   });
   win.loadFile(join(__dirname, "renderer", "index.html"));
+  // DevTools toggle (F12 / Ctrl+Shift+I) — frameless windows have no menu, so
+  // wire the accelerators by hand.
+  win.webContents.on("before-input-event", (_e, input) => {
+    if (input.type !== "keyDown") return;
+    const ctrlShiftI = input.control && input.shift && input.key.toLowerCase() === "i";
+    if (input.key === "F12" || ctrlShiftI) win.webContents.toggleDevTools();
+  });
   // The overlay stays on screen deliberately — hiding is always an explicit
   // act (Esc, the global shortcut, or the tray).
   // Minimizing shows a taskbar tile (see "minimize-window"); once restored,
@@ -164,8 +171,16 @@ ipcMain.handle("get-shortcut", () => storeGet().shortcut || DEFAULT_SHORTCUT);
 ipcMain.handle("get-autostart", () => app.getLoginItemSettings().openAtLogin);
 ipcMain.handle("set-autostart", (_e, on) => {
   app.setLoginItemSettings({ openAtLogin: !!on });
+  storeSet({ autostartChosen: true });
   return app.getLoginItemSettings().openAtLogin;
 });
+// On by default: enable launch-at-login the first time we run, until the user
+// makes an explicit choice (which then sticks, even if that choice is "off").
+function initAutostart() {
+  if (storeGet().autostartChosen) return;
+  app.setLoginItemSettings({ openAtLogin: true });
+  storeSet({ autostartChosen: true });
+}
 // Renderer reports our own availability so the tray dot reflects it.
 ipcMain.on("tray-state", (_e, { available, tooltip }) => {
   tray?.setImage(icon(available ? "available" : "idle"));
@@ -176,17 +191,16 @@ ipcMain.on("tray-state", (_e, { available, tooltip }) => {
 app.whenReady().then(() => {
   createWindow();
   createTray();
+  initAutostart();
   const shortcut = storeGet().shortcut || DEFAULT_SHORTCUT;
   const ok = globalShortcut.register(shortcut, toggleWindow);
   if (!ok) console.error(`Huddle: failed to register global shortcut ${shortcut}`);
   // Tray-only app: no dock icon on macOS.
   app.dock?.hide();
-  // Dev convenience: HUDDLE_DEBUG=1 shows the window immediately (and keeps it
-  // open on blur) instead of waiting for the shortcut.
-  if (process.env.HUDDLE_DEBUG) {
-    win.removeAllListeners("blur");
-    showWindow();
-  }
+  // Show on launch by default (including autostart) — hiding is always an
+  // explicit act (Esc, the global shortcut, or the tray). Set HUDDLE_START_HIDDEN=1
+  // to launch straight to the tray instead.
+  if (!process.env.HUDDLE_START_HIDDEN) showWindow();
 });
 
 // Stay alive with all windows closed — we live in the tray.

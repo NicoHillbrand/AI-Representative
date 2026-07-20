@@ -28,6 +28,8 @@ import {
   type Member,
   type PresenceEvent,
   type Preset,
+  type FriendGroup,
+  type SignalAudience,
 } from "./store.js";
 
 /**
@@ -66,6 +68,21 @@ const dm = (chatId: number, text: string, extra: Record<string, unknown> = {}) =
 
 const fmtMins = (m: number) => (m >= 120 ? `${Math.round(m / 60)} h` : `${m} min`);
 
+// A scheduled post's activity window, e.g. "Sat, Jul 25, 06:00 PM – 09:00 PM".
+// Rendered in the server's timezone (Telegram gives us no per-user zone).
+const fmtWhen = (startsAt: number, endsAt?: number): string => {
+  const day = new Date(startsAt).toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (!endsAt) return day;
+  const end = new Date(endsAt).toLocaleString("en-US", { hour: "2-digit", minute: "2-digit" });
+  return `${day} – ${end}`;
+};
+
 // --- outgoing notifications -----------------------------------------------------
 function onPresenceEvent(e: PresenceEvent): void {
   if (e.type === "ping" && !e.live && e.to.telegramChatId) {
@@ -82,12 +99,10 @@ function onPresenceEvent(e: PresenceEvent): void {
     if (!e.accepterLive && e.accepter.telegramChatId)
       dm(e.accepter.telegramChatId, `📞 Call with ${e.requester.displayName}: ${e.url}`);
   } else if (e.type === "opportunity" && !e.live && e.to.telegramChatId) {
-    dm(
-      e.to.telegramChatId,
-      `📣 ${e.from.displayName} posted: "${e.text}" (stands for ${fmtMins(
-        Math.round((e.expiresAt - Date.now()) / 60_000),
-      )})`,
-    );
+    const window = e.startsAt
+      ? `📅 ${fmtWhen(e.startsAt, e.endsAt)}`
+      : `stands for ${fmtMins(Math.round((e.expiresAt - Date.now()) / 60_000))}`;
+    dm(e.to.telegramChatId, `📣 ${e.from.displayName} posted: "${e.text}" (${window})`);
   } else if (e.type === "went-available" && !e.live && e.friend.telegramChatId) {
     const acts = e.member.signal?.activities
       .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
@@ -114,6 +129,7 @@ function applyAvailability(
   mins: number | undefined,
   activities: ActivityInput[],
   note?: string,
+  audience?: SignalAudience & { label?: string },
 ): string {
   const entry = setSignal(
     member,
@@ -125,45 +141,82 @@ function applyAvailability(
       visibleToGroups: a.visibleToGroups,
       durationMinutes: a.durationMinutes,
     })),
+    audience,
   );
   const until = entry.availableUntil ? new Date(entry.availableUntil) : undefined;
   const mm = until ? Math.round((until.getTime() - Date.now()) / 60_000) : mins ?? 60;
   const actText = activities
     .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
     .join(", ");
-  return `🟢 You're reachable for ${mm} min${actText ? ` — ${actText}` : ""}. Your friends' overlays just updated.`;
+  const noteText = note?.trim() ? ` (${note.trim()})` : "";
+  const audText = audience?.label ? ` · only ${audience.label}` : "";
+  return `🟢 You're reachable for ${mm} min${actText ? ` — ${actText}` : ""}${noteText}${audText}. Your friends' overlays just updated.`;
 }
 
-// --- /up preset picker --------------------------------------------------------------
-// Bare /up shows the member's call-type presets — the same catalog the
-// overlay composer offers, synced via POST /api/presence/presets — as
-// toggleable inline buttons, so people can SEE and SELECT the options
-// instead of typing them. The quick path ("/up 45 note") skips it.
+// --- /up picker --------------------------------------------------------------------
+// Bare /up opens this picker — the ONLY way to go available from Telegram, by
+// design: there's no typed syntax to remember. It offers, as toggleable inline
+// buttons: your call-type presets (the same catalog the overlay composer
+// offers, synced via POST /api/presence/presets), how long you're reachable,
+// the expected call length, and who can see it (friends/groups — nothing
+// ticked means everyone).
 interface Picker {
-  /** Snapshot at open time — keeps callback indices valid if presets change. */
+  /** Snapshots at open time — keep callback indices valid if the underlying
+   * lists change while the picker is open. */
   presets: Preset[];
-  selected: Set<number>;
-  mins: number;
+  friends: { memberId: string; displayName: string }[];
+  groups: FriendGroup[];
+  selected: Set<number>; // chosen preset (activity) indices
+  audFriends: Set<number>; // chosen friend indices → the audience
+  audGroups: Set<number>; // chosen group indices → the audience
+  mins: number; // how long you're reachable
+  callMins?: number; // expected call length (undefined = unspecified)
+  /** Typed-in-the-moment text: the activity itself if no preset is ticked,
+   * otherwise a note refining the chosen presets. Presets are skippable. */
+  note?: string;
+  /** The picker's own message, so a typed note can re-render it in place
+   * instead of dropping the other choices. */
+  messageId?: number;
 }
 const pickers = new Map<number, Picker>(); // telegram chatId -> open picker
 
 const PICKER_WINDOWS = [30, 60, 90];
+const PICKER_CALLS = [5, 15, 30, 60]; // call-length options, minutes
 
 function pickerKeyboard(p: Picker) {
-  const rows: { text: string; callback_data: string }[][] = p.presets.map((preset, i) => [
-    {
-      text: `${p.selected.has(i) ? "☑" : "☐"} ${preset.label}${
-        preset.durationMinutes ? ` (~${preset.durationMinutes}min)` : ""
-      }`,
-      callback_data: `up:t:${i}`,
-    },
-  ]);
+  const rows: { text: string; callback_data: string }[][] = [];
+  // Call types (activities) — one per row. Presets are just topics, and are
+  // OPTIONAL: you can skip them and type your own with ✍️ below.
+  for (const [i, preset] of p.presets.entries())
+    rows.push([{ text: `${p.selected.has(i) ? "☑" : "☐"} ${preset.label}`, callback_data: `up:t:${i}` }]);
+  // How long you're reachable.
   rows.push(
     PICKER_WINDOWS.map((m) => ({
-      text: p.mins === m ? `· ${m} min ·` : `${m} min`,
+      text: p.mins === m ? `· up ${m}m ·` : `up ${m}m`,
       callback_data: `up:w:${m}`,
     })),
   );
+  // Expected call length (single-select; tap again to clear).
+  rows.push(
+    PICKER_CALLS.map((m) => ({
+      text: p.callMins === m ? `· call ${m}m ·` : `call ${m}m`,
+      callback_data: `up:d:${m}`,
+    })),
+  );
+  // Audience — groups first, then friends two-up. Nothing ticked = everyone.
+  for (const [i, g] of p.groups.entries())
+    rows.push([{ text: `${p.audGroups.has(i) ? "☑" : "☐"} #${g.name}`, callback_data: `up:ag:${i}` }]);
+  for (let i = 0; i < p.friends.length; i += 2) {
+    const row: { text: string; callback_data: string }[] = [];
+    for (const j of [i, i + 1]) {
+      const f = p.friends[j];
+      if (f) row.push({ text: `${p.audFriends.has(j) ? "☑" : "☐"} ${f.displayName}`, callback_data: `up:af:${j}` });
+    }
+    rows.push(row);
+  }
+  // Type your own activity/note (skip the presets), and save a new preset.
+  rows.push([{ text: p.note ? "✍️ Edit typed text" : "✍️ Type activity/note", callback_data: "up:note" }]);
+  rows.push([{ text: "➕ Save a call type", callback_data: "up:add" }]);
   rows.push([
     { text: "🟢 Go available", callback_data: "up:go" },
     { text: "Cancel", callback_data: "up:x" },
@@ -171,14 +224,43 @@ function pickerKeyboard(p: Picker) {
   return { inline_keyboard: rows };
 }
 
+function pickerText(p: Picker): string {
+  const base =
+    "Set yourself up for a call:\n" +
+    "• tick a call type, or ✍️ type your own (presets are optional)\n" +
+    "• how long you're reachable, and the call length\n" +
+    "• who can see it — tick friends/groups, or leave all blank for everyone\n" +
+    "Then tap Go.";
+  return p.note ? `${base}\n\n📝 ${p.note}` : base;
+}
+
+/** Send or update the picker message in place, keeping every current choice. */
+async function renderPicker(chatId: number, p: Picker): Promise<void> {
+  if (p.messageId !== undefined) {
+    await tg("editMessageText", {
+      chat_id: chatId,
+      message_id: p.messageId,
+      text: pickerText(p),
+      reply_markup: pickerKeyboard(p),
+    });
+  } else {
+    const sent = await dm(chatId, pickerText(p), { reply_markup: pickerKeyboard(p) });
+    p.messageId = sent?.message_id;
+  }
+}
+
 async function openPicker(chatId: number, member: Member): Promise<void> {
-  const picker: Picker = { presets: presetsFor(member), selected: new Set(), mins: 60 };
+  const picker: Picker = {
+    presets: presetsFor(member),
+    friends: friendEntriesOf(member),
+    groups: groupsFor(member),
+    selected: new Set(),
+    audFriends: new Set(),
+    audGroups: new Set(),
+    mins: 60,
+  };
   pickers.set(chatId, picker);
-  await dm(
-    chatId,
-    "Tick what you're up for (optional), pick how long you're reachable, then Go.\n(/presets manages this list; /up 45 <note> skips the picker.)",
-    { reply_markup: pickerKeyboard(picker) },
-  );
+  await renderPicker(chatId, picker);
 }
 
 // --- /post parsing ----------------------------------------------------------------
@@ -260,6 +342,200 @@ function resolveAudienceSegment(
   return { ok: true, ids: [friend.memberId], label: friend.displayName, group: false };
 }
 
+// --- guided button flows (the picker philosophy) --------------------------------
+// Everything is button-first. Where free text is genuinely needed (a post's
+// wording, a new call-type topic, a group name) we PROMPT for it with a
+// ForceReply and capture the next plain message — no command syntax to
+// memorize. `pending` records what a chat's next plain-text message means.
+type Pending =
+  | { kind: "preset-add"; reopenUp?: boolean }
+  | { kind: "up-note" }
+  | { kind: "group-new" }
+  | { kind: "post-text" };
+const pending = new Map<number, Pending>();
+
+function promptFor(chatId: number, p: Pending, text: string): Promise<any> {
+  pending.set(chatId, p);
+  return dm(chatId, text, { reply_markup: { force_reply: true } });
+}
+
+async function handlePending(chatId: number, member: Member, p: Pending, text: string): Promise<void> {
+  if (p.kind === "post-text") {
+    const body = text.trim().slice(0, 200);
+    if (!body) {
+      await dm(chatId, "Nothing to post — send /post again when you're ready.");
+      return;
+    }
+    await openPostPicker(chatId, member, body);
+    return;
+  }
+  if (p.kind === "up-note") {
+    const picker = pickers.get(chatId);
+    if (!picker) {
+      await dm(chatId, "That picker expired — send /up again.");
+      return;
+    }
+    picker.note = text.trim().slice(0, 80) || undefined;
+    await renderPicker(chatId, picker); // keeps every other choice intact
+    return;
+  }
+  if (p.kind === "preset-add") {
+    const label = text.trim().slice(0, 60);
+    if (!label) {
+      await dm(chatId, "Empty — nothing added.");
+      return;
+    }
+    const updated = setPresets(member, [...presetsFor(member), { label, visibleTo: "all" }]);
+    const picker = p.reopenUp ? pickers.get(chatId) : undefined;
+    if (picker) {
+      // Reflect the new preset in the still-open picker and pre-tick it,
+      // preserving the window/call-length/audience already chosen.
+      picker.presets = updated;
+      picker.selected.add(updated.length - 1);
+      await renderPicker(chatId, picker);
+    } else if (p.reopenUp) {
+      await openPicker(chatId, member);
+    } else {
+      await openPresetsManager(chatId, member);
+    }
+    return;
+  }
+  if (p.kind === "group-new") {
+    const canon = text.trim().replace(/\s+/g, " ").slice(0, 24);
+    const result = setGroup(member, canon, []);
+    if (!result.ok) {
+      await dm(
+        chatId,
+        result.error === "too_many"
+          ? "You already have 20 groups — delete one first."
+          : 'That name won\'t work — 1–24 characters, no "," or ":", and not "all"/"everyone".',
+      );
+      return;
+    }
+    const edit: GroupEdit = { name: canon, friends: friendEntriesOf(member) };
+    editingGroup.set(chatId, edit);
+    await dm(chatId, `Group "${canon}" created. Tick who's in it:`, {
+      reply_markup: groupEditorKeyboard(member, edit),
+    });
+    return;
+  }
+}
+
+// --- /post picker ----------------------------------------------------------------
+// Bare /post asks for the text, then this chooses audience + how long it stands.
+interface PostPicker {
+  text: string;
+  friends: { memberId: string; displayName: string }[];
+  groups: FriendGroup[];
+  audFriends: Set<number>;
+  audGroups: Set<number>;
+  mins: number;
+}
+const postPickers = new Map<number, PostPicker>();
+const POST_WINDOWS = [60, 240, 720, 1440]; // 1 h, 4 h, 12 h, 1 day
+
+function postPickerKeyboard(p: PostPicker) {
+  const rows: { text: string; callback_data: string }[][] = [];
+  for (const [i, g] of p.groups.entries())
+    rows.push([{ text: `${p.audGroups.has(i) ? "☑" : "☐"} #${g.name}`, callback_data: `post:ag:${i}` }]);
+  for (let i = 0; i < p.friends.length; i += 2) {
+    const row: { text: string; callback_data: string }[] = [];
+    for (const j of [i, i + 1]) {
+      const f = p.friends[j];
+      if (f) row.push({ text: `${p.audFriends.has(j) ? "☑" : "☐"} ${f.displayName}`, callback_data: `post:af:${j}` });
+    }
+    rows.push(row);
+  }
+  rows.push(
+    POST_WINDOWS.map((m) => ({
+      text: p.mins === m ? `· ${fmtMins(m)} ·` : fmtMins(m),
+      callback_data: `post:w:${m}`,
+    })),
+  );
+  rows.push([
+    { text: "📣 Post", callback_data: "post:go" },
+    { text: "Cancel", callback_data: "post:x" },
+  ]);
+  return { inline_keyboard: rows };
+}
+
+async function openPostPicker(chatId: number, member: Member, text: string): Promise<void> {
+  const picker: PostPicker = {
+    text,
+    friends: friendEntriesOf(member),
+    groups: groupsFor(member),
+    audFriends: new Set(),
+    audGroups: new Set(),
+    mins: 240,
+  };
+  postPickers.set(chatId, picker);
+  await dm(
+    chatId,
+    `📣 "${text}"\nWho should see it? Tick friends/groups, or leave blank for all friends. Pick how long it stands, then Post.`,
+    { reply_markup: postPickerKeyboard(picker) },
+  );
+}
+
+// --- /presets manager ------------------------------------------------------------
+// A preset is just a topic. Tap 🗑 to remove one, ➕ to add one.
+function presetsManagerKeyboard(member: Member) {
+  const rows: { text: string; callback_data: string }[][] = presetsFor(member).map((p, i) => [
+    { text: `🗑 ${p.label}`, callback_data: `pst:rm:${i}` },
+  ]);
+  rows.push([{ text: "➕ New call type", callback_data: "pst:add" }]);
+  rows.push([{ text: "Done", callback_data: "pst:done" }]);
+  return { inline_keyboard: rows };
+}
+
+async function openPresetsManager(chatId: number, member: Member): Promise<void> {
+  await dm(
+    chatId,
+    "Your call types (topics the /up picker offers). Tap 🗑 to remove one, or add a new one:",
+    { reply_markup: presetsManagerKeyboard(member) },
+  );
+}
+
+// --- /groups manager -------------------------------------------------------------
+interface GroupEdit {
+  name: string;
+  /** Snapshot so friend indices stay valid across toggles. */
+  friends: { memberId: string; displayName: string }[];
+}
+const editingGroup = new Map<number, GroupEdit>();
+
+function groupsManagerKeyboard(member: Member) {
+  const rows: { text: string; callback_data: string }[][] = groupsFor(member).map((g, i) => [
+    { text: `${g.name} (${g.memberIds.length})`, callback_data: `grp:open:${i}` },
+  ]);
+  rows.push([{ text: "➕ New group", callback_data: "grp:new" }]);
+  rows.push([{ text: "Done", callback_data: "grp:done" }]);
+  return { inline_keyboard: rows };
+}
+
+async function openGroupsManager(chatId: number, member: Member): Promise<void> {
+  await dm(chatId, "Your friend groups — tap one to edit its members, or make a new one:", {
+    reply_markup: groupsManagerKeyboard(member),
+  });
+}
+
+function groupEditorKeyboard(member: Member, edit: GroupEdit) {
+  const inGroup = new Set(resolveGroup(member, edit.name)?.memberIds ?? []);
+  const rows: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < edit.friends.length; i += 2) {
+    const row: { text: string; callback_data: string }[] = [];
+    for (const j of [i, i + 1]) {
+      const f = edit.friends[j];
+      if (f) row.push({ text: `${inGroup.has(f.memberId) ? "☑" : "☐"} ${f.displayName}`, callback_data: `grpe:tf:${j}` });
+    }
+    rows.push(row);
+  }
+  rows.push([
+    { text: "🗑 Delete group", callback_data: "grpe:del" },
+    { text: "Back", callback_data: "grpe:back" },
+  ]);
+  return { inline_keyboard: rows };
+}
+
 // --- negotiation mode --------------------------------------------------------------
 // /negotiate runs the gated mutual-interest protocol right in the chat: the
 // user describes what they're after, the matching plane confirms overlaps
@@ -339,13 +615,12 @@ const NEGOTIATE_HELP =
 
 function commandOverview(member: Member | undefined): string {
   return member
-    ? `/up — pick from your call types and go available (buttons)
-/up [minutes] [note] — quick set, no picker
-/presets — see or edit your call types
+    ? `/up — go available (buttons: call type, how long, call length, who sees it)
+/post — post a coordination opportunity (buttons: text, who sees it, how long)
+/presets — your call types, edited with buttons (each is just a topic)
+/groups — make & edit friend groups with buttons
 /status — who's up for a call, plus open posts
 /clear — stop being available
-/post [minutes] [to <names>:] <text> — post a coordination opportunity (default: all friends, 4 h) — e.g. /post to close: sauna?
-/groups — named friend sets for /post audiences (e.g. "close")
 /code — your friend code to share
 /addfriend <code> — add a friend
 ${NEGOTIATE_HELP}
@@ -370,6 +645,18 @@ async function onMessage(msg: any): Promise<void> {
   const chatId: number = msg.chat.id;
   const text = msg.text.trim();
   const member = memberByTelegramChat(chatId);
+
+  // A pending ForceReply prompt (add a call type, name a group, compose a post)
+  // claims the next plain-text message. A command (leading "/") cancels it and
+  // is handled normally.
+  const pend = pending.get(chatId);
+  if (pend) {
+    pending.delete(chatId);
+    if (member && !text.startsWith("/")) {
+      await handlePending(chatId, member, pend, text);
+      return;
+    }
+  }
 
   // /start <link-code> — from the overlay's deep link. Every /start ends
   // with the full command overview, so a fresh chat explains itself.
@@ -510,8 +797,10 @@ async function onMessage(msg: any): Promise<void> {
       ? "\n\nOpen posts:\n" +
         posts
           .map((o) => {
-            const left = Math.round((new Date(o.expiresAt).getTime() - Date.now()) / 60_000);
-            return `📣 ${o.mine ? "You" : o.from.displayName}: "${o.text}" (${fmtMins(left)} left)`;
+            const when = o.startsAt
+              ? `📅 ${fmtWhen(new Date(o.startsAt).getTime(), o.endsAt ? new Date(o.endsAt).getTime() : undefined)}`
+              : `${fmtMins(Math.round((new Date(o.expiresAt).getTime() - Date.now()) / 60_000))} left`;
+            return `📣 ${o.mine ? "You" : o.from.displayName}: "${o.text}" (${when})`;
           })
           .join("\n")
       : "";
@@ -519,14 +808,20 @@ async function onMessage(msg: any): Promise<void> {
     return;
   }
 
-  // /post — a coordination opportunity to all friends, one friend, a named
-  // group ("/post to close: …"), or any mix, straight from chat.
+  // /post — a coordination opportunity. Bare /post walks you through it with
+  // buttons (compose → audience → how long); a typed "/post [minutes]
+  // [to <names>:] <text>" still works as a shortcut.
+  if (member && text.trim() === "/post") {
+    await promptFor(chatId, { kind: "post-text" }, "📣 What do you want to post? Send the text — I'll ask who sees it and for how long.");
+    return;
+  }
   if (member && text.startsWith("/post")) {
     const usage =
       "Usage: /post [minutes] [to <names>:] <text>\n" +
       "e.g. /post climbing Saturday morning?\n" +
       "/post to close: chess tonight? (a group — /groups manages them)\n" +
-      "/post 90 to Ada, Bob: sauna in a bit? (names comma-separated, colon after)";
+      "/post 90 to Ada, Bob: sauna in a bit? (names comma-separated, colon after)\n" +
+      "Or just send /post on its own to do it with buttons.";
     const { minutes, toNames, text: body } = parsePostArgs(text.slice(5));
     if (!body) {
       await dm(chatId, usage);
@@ -589,44 +884,30 @@ async function onMessage(msg: any): Promise<void> {
   }
 
   if (member && text.startsWith("/up")) {
-    // "/up" alone opens the preset picker; "/up 45", "/up 45min focus time",
-    // "/up focus time" set directly — a leading number (with optional
-    // "min"/"m" suffix) is the window, the rest is the note.
-    const [, first, ...rest] = text.split(/\s+/);
-    if (!first) {
-      await openPicker(chatId, member);
-      return;
-    }
-    const mins = parseInt(first, 10);
-    const note = (Number.isFinite(mins) ? rest : [first, ...rest]).join(" ").trim();
-    await dm(
-      chatId,
-      applyAvailability(member, Number.isFinite(mins) ? mins : undefined, [], note || undefined),
-    );
+    // Picker-only, by design — no typed syntax. Everything (call type,
+    // window, call length, audience) is set with the buttons.
+    await openPicker(chatId, member);
     return;
   }
 
   // /presets — see and edit the call-type catalog the /up picker offers.
   // Overlay users edit there (it re-syncs on every change and on launch, so
   // it wins); this is mainly for Telegram-only members.
+  // Bare /presets opens the button manager; typed add/rm remain as shortcuts.
+  if (member && text.trim() === "/presets") {
+    await openPresetsManager(chatId, member);
+    return;
+  }
   if (member && text.startsWith("/presets")) {
     const [, sub, ...restArgs] = text.split(/\s+/);
     const current = presetsFor(member);
     const list = (presets: Preset[]) =>
-      presets.length
-        ? presets
-            .map(
-              (p, i) =>
-                `${i + 1}. ${p.label}${p.durationMinutes ? ` (~${p.durationMinutes}min call)` : ""}${
-                  p.visibleTo !== "all" ? " (limited visibility)" : ""
-                }`,
-            )
-            .join("\n")
-        : "(none)";
+      presets.length ? presets.map((p, i) => `${i + 1}. ${p.label}`).join("\n") : "(none)";
     if (sub === "add") {
-      const label = restArgs.join(" ").trim();
+      // A preset is just a topic (call length is chosen per-availability in /up).
+      const label = restArgs.join(" ").trim().slice(0, 60);
       if (!label) {
-        await dm(chatId, "Usage: /presets add <call type>\ne.g. /presets add rubber-duck a bug");
+        await dm(chatId, "Usage: /presets add <topic>\ne.g. /presets add rubber-duck a bug\n(Or just send /presets to manage them with buttons.)");
         return;
       }
       const updated = setPresets(member, [...current, { label, visibleTo: "all" }]);
@@ -643,15 +924,15 @@ async function onMessage(msg: any): Promise<void> {
       await dm(chatId, `Removed. Your call types:\n${list(updated)}`);
       return;
     }
-    await dm(
-      chatId,
-      `Your call types (what the /up picker offers):\n${list(current)}\n\n/presets add <label> — add one\n/presets rm <n> — remove one${
-        member.presets ? "" : "\n(These are the defaults — edit them and they become yours.)"
-      }`,
-    );
+    await openPresetsManager(chatId, member);
     return;
   }
 
+  // Bare /groups opens the button manager; typed set/add/drop/rm are shortcuts.
+  if (member && text.trim() === "/groups") {
+    await openGroupsManager(chatId, member);
+    return;
+  }
   // /groups — named friend sets for /post audiences. Shared with the
   // overlay's settings editor (same server-side list, live-synced).
   if (member && text.startsWith("/groups")) {
@@ -670,8 +951,43 @@ async function onMessage(msg: any): Promise<void> {
       "/groups — list your groups\n" +
       "/groups set <name> <friend names, comma-separated> — create or replace one\n" +
       "  e.g. /groups set close Ada, Bob\n" +
-      "/groups rm <name> — delete one\n" +
+      "/groups add <name> <friends> — add friends to it\n" +
+      "/groups drop <name> <friends> — remove friends from it\n" +
+      "/groups rm <name> — delete the whole group\n" +
       'Post to one with: /post to close: <text> (group names: one word, no ","/":").';
+    if (sub === "add" || sub === "drop") {
+      const memberNames = restArgs
+        .join(" ")
+        .split(",")
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      if (!groupName || !memberNames.length) {
+        await dm(chatId, usage);
+        return;
+      }
+      const group = resolveGroup(member, groupName);
+      if (!group) {
+        await dm(chatId, `No group called "${groupName}". Make it with: /groups set ${groupName} <friends>`);
+        return;
+      }
+      const ids = new Set(group.memberIds);
+      for (const n of memberNames) {
+        const match = resolveFriendName(n, friendEntriesOf(member));
+        if (!match.ok) {
+          await dm(chatId, match.error);
+          return;
+        }
+        if (sub === "add") ids.add(match.memberId);
+        else ids.delete(match.memberId);
+      }
+      const result = setGroup(member, group.name, [...ids]);
+      if (!result.ok) {
+        await dm(chatId, "Couldn't update that group — try again.");
+        return;
+      }
+      await dm(chatId, `Updated. Your groups:\n${list()}`);
+      return;
+    }
     if (sub === "set") {
       const memberNames = restArgs
         .join(" ")
@@ -757,8 +1073,9 @@ async function onCallback(cb: any): Promise<void> {
     return;
   }
 
-  // /up picker buttons: up:t:<i> toggle preset, up:w:<mins> window,
-  // up:go apply, up:x cancel. Toggles re-render the keyboard in place.
+  // /up picker buttons: up:t:<i> toggle activity, up:w:<mins> window,
+  // up:d:<mins> call length, up:af:<i> toggle friend, up:ag:<i> toggle group
+  // (audience), up:go apply, up:x cancel. Toggles re-render in place.
   if (member && chatId !== undefined && action === "up") {
     const picker = pickers.get(chatId);
     if (!picker) {
@@ -775,20 +1092,60 @@ async function onCallback(cb: any): Promise<void> {
     if (args[0] === "go") {
       pickers.delete(chatId);
       const chosen = [...picker.selected].sort((a, b) => a - b).map((i) => picker.presets[i]);
-      const confirmation = applyAvailability(
-        member,
-        picker.mins,
-        chosen.map((p) => ({
-          label: p.label,
-          durationMinutes: p.durationMinutes,
-          visibleTo: p.visibleTo,
-          visibleToGroups: p.visibleToGroups,
-        })),
-      );
+      // Availability audience: ticked groups (kept as live name refs) + ticked
+      // friends. Nothing ticked → everyone (undefined). The picker's call
+      // length, if set, overrides each activity's own default.
+      const audFriendIds = [...picker.audFriends]
+        .map((i) => picker.friends[i]?.memberId)
+        .filter((x): x is string => !!x);
+      const audGroupNames = [...picker.audGroups]
+        .map((i) => picker.groups[i]?.name)
+        .filter((x): x is string => !!x);
+      const audLabels = [
+        ...audGroupNames.map((n) => `#${n}`),
+        ...[...picker.audFriends].map((i) => picker.friends[i]?.displayName).filter((x): x is string => !!x),
+      ];
+      const audience =
+        audFriendIds.length || audGroupNames.length
+          ? { visibleTo: audFriendIds, visibleToGroups: audGroupNames, label: audLabels.join(", ") }
+          : undefined;
+      const activities = chosen.map((p) => ({
+        label: p.label,
+        durationMinutes: picker.callMins ?? p.durationMinutes,
+        visibleTo: p.visibleTo,
+        visibleToGroups: p.visibleToGroups,
+      }));
+      // Typed text: if you skipped presets it IS the activity; if you picked
+      // one it's a note refining it.
+      const typed = picker.note?.trim();
+      let note: string | undefined;
+      if (typed) {
+        if (activities.length === 0) activities.push({ label: typed, durationMinutes: picker.callMins, visibleTo: "all", visibleToGroups: undefined });
+        else note = typed;
+      }
+      const confirmation = applyAvailability(member, picker.mins, activities, note, audience);
       await answer();
       if (messageId !== undefined)
         await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: confirmation });
       else await dm(chatId, confirmation);
+      return;
+    }
+    if (args[0] === "add") {
+      await answer();
+      await promptFor(
+        chatId,
+        { kind: "preset-add", reopenUp: true },
+        'Send a call type to SAVE for next time — just a topic, e.g. "rubber-duck a bug". I\'ll tick it in the picker.',
+      );
+      return;
+    }
+    if (args[0] === "note") {
+      await answer();
+      await promptFor(
+        chatId,
+        { kind: "up-note" },
+        "Type your activity (if you skipped the presets) or a note to add to it. Your other choices stay put.",
+      );
       return;
     }
     if (args[0] === "t") {
@@ -797,6 +1154,15 @@ async function onCallback(cb: any): Promise<void> {
     } else if (args[0] === "w") {
       const m = parseInt(args[1] ?? "", 10);
       if (PICKER_WINDOWS.includes(m)) picker.mins = m;
+    } else if (args[0] === "d") {
+      const m = parseInt(args[1] ?? "", 10);
+      if (PICKER_CALLS.includes(m)) picker.callMins = picker.callMins === m ? undefined : m;
+    } else if (args[0] === "af") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (picker.friends[i]) picker.audFriends.has(i) ? picker.audFriends.delete(i) : picker.audFriends.add(i);
+    } else if (args[0] === "ag") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (picker.groups[i]) picker.audGroups.has(i) ? picker.audGroups.delete(i) : picker.audGroups.add(i);
     }
     await answer();
     if (messageId !== undefined)
@@ -804,6 +1170,183 @@ async function onCallback(cb: any): Promise<void> {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: pickerKeyboard(picker),
+      });
+    return;
+  }
+
+  // /post picker: post:af/ag toggle audience, post:w window, post:go, post:x.
+  if (member && chatId !== undefined && action === "post") {
+    const p = postPickers.get(chatId);
+    if (!p) {
+      await answer("This expired — send /post again.");
+      return;
+    }
+    if (args[0] === "x") {
+      postPickers.delete(chatId);
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "Okay — not posting." });
+      return;
+    }
+    if (args[0] === "go") {
+      postPickers.delete(chatId);
+      const ids = new Set<string>();
+      for (const i of p.audGroups) for (const id of p.groups[i]?.memberIds ?? []) ids.add(id);
+      for (const i of p.audFriends) if (p.friends[i]) ids.add(p.friends[i].memberId);
+      const restricted = ids.size > 0;
+      // A single pure group keeps its name on the post ("to close").
+      const audienceLabel =
+        p.audGroups.size === 1 && p.audFriends.size === 0 ? p.groups[[...p.audGroups][0]]?.name : undefined;
+      const result = postOpportunity(member, p.text, restricted ? [...ids] : "all", p.mins, audienceLabel);
+      await answer();
+      let msg: string;
+      if (!result.ok) {
+        msg =
+          result.error === "too_many"
+            ? "You already have 5 open posts."
+            : result.error === "too_fast"
+              ? "Easy — you just posted. Give it a moment."
+              : "Couldn't post that.";
+      } else {
+        const mins = Math.round((new Date(result.opportunity.expiresAt).getTime() - Date.now()) / 60_000);
+        const audText = !restricted
+          ? "all your friends"
+          : audienceLabel
+            ? `${audienceLabel} (${ids.size} friend${ids.size === 1 ? "" : "s"})`
+            : `${ids.size} friend${ids.size === 1 ? "" : "s"}`;
+        msg = `📣 Posted to ${audText} (stands for ${fmtMins(mins)}): "${result.opportunity.text}"`;
+      }
+      if (messageId !== undefined) await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: msg });
+      else await dm(chatId, msg);
+      return;
+    }
+    if (args[0] === "af") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (p.friends[i]) p.audFriends.has(i) ? p.audFriends.delete(i) : p.audFriends.add(i);
+    } else if (args[0] === "ag") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (p.groups[i]) p.audGroups.has(i) ? p.audGroups.delete(i) : p.audGroups.add(i);
+    } else if (args[0] === "w") {
+      const m = parseInt(args[1] ?? "", 10);
+      if (POST_WINDOWS.includes(m)) p.mins = m;
+    }
+    await answer();
+    if (messageId !== undefined)
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: postPickerKeyboard(p) });
+    return;
+  }
+
+  // /presets manager: pst:add (prompt), pst:rm:<i>, pst:done.
+  if (member && chatId !== undefined && action === "pst") {
+    if (args[0] === "add") {
+      await answer();
+      await promptFor(chatId, { kind: "preset-add" }, 'Send the new call type — just a topic, e.g. "rubber-duck a bug".');
+      return;
+    }
+    if (args[0] === "done") {
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "Done editing your call types." });
+      return;
+    }
+    if (args[0] === "rm") {
+      const i = parseInt(args[1] ?? "", 10);
+      const cur = presetsFor(member);
+      if (cur[i]) setPresets(member, cur.filter((_, k) => k !== i));
+      await answer("Removed");
+      if (messageId !== undefined)
+        await tg("editMessageReplyMarkup", {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: presetsManagerKeyboard(member),
+        });
+      return;
+    }
+    await answer();
+    return;
+  }
+
+  // /groups manager: grp:new (prompt), grp:open:<i>, grp:done.
+  if (member && chatId !== undefined && action === "grp") {
+    if (args[0] === "new") {
+      await answer();
+      await promptFor(chatId, { kind: "group-new" }, "Name for the new group? (one word works best, e.g. close)");
+      return;
+    }
+    if (args[0] === "done") {
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "Done with your groups." });
+      return;
+    }
+    if (args[0] === "open") {
+      const g = groupsFor(member)[parseInt(args[1] ?? "", 10)];
+      if (!g) {
+        await answer("That group is gone.");
+        return;
+      }
+      const edit: GroupEdit = { name: g.name, friends: friendEntriesOf(member) };
+      editingGroup.set(chatId, edit);
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", {
+          chat_id: chatId,
+          message_id: messageId,
+          text: `Editing "${g.name}" — tick who's in it:`,
+          reply_markup: groupEditorKeyboard(member, edit),
+        });
+      return;
+    }
+    await answer();
+    return;
+  }
+
+  // Group editor: grpe:tf:<i> toggle a friend in/out, grpe:del, grpe:back.
+  if (member && chatId !== undefined && action === "grpe") {
+    const edit = editingGroup.get(chatId);
+    if (!edit) {
+      await answer("This expired — send /groups again.");
+      return;
+    }
+    if (args[0] === "back") {
+      editingGroup.delete(chatId);
+      await answer();
+      if (messageId !== undefined)
+        await tg("editMessageText", {
+          chat_id: chatId,
+          message_id: messageId,
+          text: "Your friend groups:",
+          reply_markup: groupsManagerKeyboard(member),
+        });
+      return;
+    }
+    if (args[0] === "del") {
+      editingGroup.delete(chatId);
+      removeGroup(member, edit.name);
+      await answer("Deleted");
+      if (messageId !== undefined)
+        await tg("editMessageText", {
+          chat_id: chatId,
+          message_id: messageId,
+          text: `Deleted "${edit.name}". Your friend groups:`,
+          reply_markup: groupsManagerKeyboard(member),
+        });
+      return;
+    }
+    if (args[0] === "tf") {
+      const f = edit.friends[parseInt(args[1] ?? "", 10)];
+      if (f) {
+        const cur = new Set(resolveGroup(member, edit.name)?.memberIds ?? []);
+        cur.has(f.memberId) ? cur.delete(f.memberId) : cur.add(f.memberId);
+        setGroup(member, edit.name, [...cur]);
+      }
+    }
+    await answer();
+    if (messageId !== undefined)
+      await tg("editMessageReplyMarkup", {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: groupEditorKeyboard(member, edit),
       });
     return;
   }
@@ -826,12 +1369,12 @@ export async function startTelegramBridge(): Promise<void> {
   void tg("setMyCommands", {
     commands: [
       { command: "help", description: "Overview of everything you can do" },
-      { command: "up", description: "Go available — pick from your call types" },
-      { command: "presets", description: "See or edit your call types" },
+      { command: "up", description: "Go available — pick type, length, and who sees it" },
+      { command: "post", description: "Post a coordination opportunity (buttons)" },
+      { command: "presets", description: "Edit your call types (buttons)" },
       { command: "status", description: "Who's up for a call, plus open posts" },
       { command: "clear", description: "Stop being available" },
-      { command: "post", description: "Post a coordination opportunity to friends" },
-      { command: "groups", description: "Named friend sets to post to (e.g. close)" },
+      { command: "groups", description: "Make & edit friend groups (buttons)" },
       { command: "code", description: "Your friend code to share" },
       { command: "addfriend", description: "Add a friend by their code" },
       { command: "negotiate", description: "Find mutual interests, disclosed only when mutual" },

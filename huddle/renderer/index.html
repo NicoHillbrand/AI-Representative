@@ -10,11 +10,10 @@
 <body>
   <div id="panel">
     <header id="drag-bar">
-      <span class="brand">huddle</span>
+      <span id="brand" class="brand" title="Back to friends">huddle</span>
       <span class="header-right">
         <span id="conn-dot" class="dot off" title="Disconnected"></span>
-        <button id="post-btn" class="ghost" title="Post a coordination opportunity">📣</button>
-        <button id="interests-btn" class="ghost" title="Session interests">+</button>
+        <button id="interests-btn" class="ghost" title="Go available or propose something">+</button>
         <button id="settings-btn" class="ghost" title="Settings">⚙</button>
         <button id="min-btn" class="ghost" title="Minimize to the taskbar">–</button>
         <button id="close-btn" class="ghost" title="Close to tray — Huddle keeps running (quit via the tray menu)">✕</button>
@@ -69,7 +68,18 @@
       <p id="roster-empty" class="muted center" hidden>Nobody's around right now.<br/>Be the first.</p>
     </section>
 
-    <!-- Composer (opened via + in the header): duration, interests, go. -->
+    <!-- Chooser (opened via + in the header): available now, or propose. -->
+    <section id="compose" hidden>
+      <h1>Get something going</h1>
+      <button id="compose-call" class="primary big">I'm up for a call now</button>
+      <button id="compose-propose" class="big">Propose something for later</button>
+      <p class="muted small">A call now flips you "available" so friends can hop on.
+      Proposing posts a coordination opportunity — for a set time, or open-ended
+      that people can get back to you on.</p>
+      <button id="compose-back" class="ghost">back</button>
+    </section>
+
+    <!-- Composer (available now): duration, interests, go. -->
     <section id="interests" hidden>
       <div class="presets">
         <button class="preset" data-mins="30">30m</button>
@@ -84,18 +94,35 @@
       <button id="interests-back" class="ghost">back</button>
     </section>
 
-    <!-- Post composer (📣 in the header): text, audience, how long it stands. -->
+    <!-- Post composer (Propose in the + chooser): text, audience, when. -->
     <section id="post" hidden>
-      <h1>Post an opportunity</h1>
+      <h1>Propose something</h1>
       <input id="post-text" type="text" maxlength="200" placeholder="e.g. climbing Saturday morning?" />
       <div class="acts-head">who sees it</div>
       <div id="post-audience" class="vis-picker"></div>
-      <div class="acts-head">stands for</div>
-      <div class="presets">
-        <button class="preset" data-mins="60">1h</button>
-        <button class="preset selected" data-mins="240">4h</button>
-        <button class="preset" data-mins="1440">24h</button>
-        <input id="post-custom-mins" type="number" min="15" max="1440" placeholder="min" title="Custom (15–1440 min)" />
+      <div class="acts-head">when</div>
+      <div class="presets" id="post-when-seg">
+        <button class="preset selected" data-when="sometime">Sometime</button>
+        <button class="preset" data-when="scheduled">At a set time</button>
+      </div>
+      <div id="post-sometime">
+        <div class="acts-head">stands for</div>
+        <div class="presets">
+          <button class="preset" data-mins="240">4h</button>
+          <button class="preset selected" data-mins="1440">1d</button>
+          <button class="preset" data-mins="4320">3d</button>
+          <button class="preset" data-mins="10080">1w</button>
+          <input id="post-custom-mins" type="number" min="15" max="20160" placeholder="min" title="Custom (15 min – 14 days)" />
+        </div>
+      </div>
+      <div id="post-scheduled" hidden>
+        <div class="sched-row">
+          <input id="post-date" type="date" title="Day" />
+          <input id="post-start" type="time" title="Start time" />
+          <span class="muted small">to</span>
+          <input id="post-end" type="time" title="End time (optional)" />
+        </div>
+        <p class="muted small">Stays up for friends until the time passes. Leave the end empty for an open finish.</p>
       </div>
       <button id="post-send" class="primary big">Post it</button>
       <button id="post-back" class="ghost">back</button>
@@ -115,7 +142,10 @@
 
     <!-- Settings -->
     <section id="settings" hidden>
-      <h1>Settings</h1>
+      <div class="view-head">
+        <h1>Settings</h1>
+        <button id="settings-close" class="ghost" title="Back">✕</button>
+      </div>
 
       <div class="setting">
         <button id="open-manage" class="big">Call type presets…</button>
@@ -189,11 +219,10 @@
 
       <label class="setting toggle">
         <input id="set-autostart" type="checkbox" />
-        <span>Start Huddle at login</span>
+        <span>Start Huddle on Windows startup</span>
       </label>
 
       <div class="setting">
-        <button id="settings-back" class="primary big">Done</button>
         <button id="signout-btn" class="danger big">Sign out (unpair this device)</button>
       </div>
     </section>

@@ -44,6 +44,21 @@ export interface Signal {
   expiresAt: number;
   note?: string;
   activities: StoredActivity[];
+  /** Who may see this availability AT ALL. "all"/absent = every friend;
+   * otherwise the memberIds allowed, plus (live) any group in
+   * `visibleToGroups`. Gates the whole entry — a friend outside the audience
+   * sees you as unavailable, and never gets the went-available ping. */
+  visibleTo?: "all" | string[];
+  /** Group names whose CURRENT members may also see the availability,
+   * resolved at view time (same live semantics as Activity.visibleToGroups). */
+  visibleToGroups?: string[];
+}
+
+/** Audience for a whole signal (the /up picker sets this); mirrors an
+ * activity's visibility fields. Absent/`"all"` means every friend. */
+export interface SignalAudience {
+  visibleTo?: "all" | string[];
+  visibleToGroups?: string[];
 }
 
 /** A reusable call-type preset (the overlay's catalog, mirrored server-side
@@ -95,7 +110,7 @@ export type PresenceEvent =
   | { type: "call-request"; from: Member; to: Member; live: boolean }
   | { type: "call-start"; requester: Member; accepter: Member; url: string; requesterLive: boolean; accepterLive: boolean }
   | { type: "went-available"; member: Member; friend: Member; live: boolean }
-  | { type: "opportunity"; from: Member; to: Member; text: string; expiresAt: number; live: boolean };
+  | { type: "opportunity"; from: Member; to: Member; text: string; expiresAt: number; startsAt?: number; endsAt?: number; live: boolean };
 
 let eventSink: ((e: PresenceEvent) => void) | undefined;
 export function setEventSink(fn: (e: PresenceEvent) => void): void {
@@ -435,9 +450,21 @@ export function hasLiveSubscriber(memberId: string): boolean {
 }
 
 // --- signals ---------------------------------------------------------------------
+/** Whether `viewerId` is inside a signal's audience. You always see your own;
+ * absent/"all" means every friend; otherwise the listed memberIds plus the
+ * CURRENT members of any referenced group (live). Enforced server-side, so a
+ * friend outside the audience never learns you're available. */
+function signalAudienceIncludes(m: Member, viewerId: string): boolean {
+  const s = m.signal;
+  if (!s || m.id === viewerId) return true;
+  if (!s.visibleTo || s.visibleTo === "all") return true;
+  if (s.visibleTo.includes(viewerId)) return true;
+  return (s.visibleToGroups ?? []).some((g) => resolveGroup(m, g)?.memberIds.includes(viewerId));
+}
+
 function entryFor(m: Member, viewerId: string): RosterEntry {
   const now = Date.now();
-  const active = !!m.signal && now < m.signal.expiresAt;
+  const active = !!m.signal && now < m.signal.expiresAt && signalAudienceIncludes(m, viewerId);
   if (!active || !m.signal) {
     return { memberId: m.id, displayName: m.displayName, available: false };
   }
@@ -479,6 +506,7 @@ export function setSignal(
   windowMinutes: number,
   note?: string,
   activities: Activity[] = [],
+  audience?: SignalAudience,
 ): RosterEntry {
   const windowMins = clampMins(windowMinutes);
   const now = Date.now();
@@ -490,6 +518,12 @@ export function setSignal(
     ...(a.durationMinutes ? { durationMinutes: clampDuration(a.durationMinutes) } : {}),
   }));
   const wasActive = !!member.signal && now < member.signal.expiresAt;
+  // A signal-level audience restricts who sees the availability at all. An
+  // explicit list (even empty, when only groups are chosen) counts; "all"
+  // or an absent audience means every friend.
+  const restrictedTo = Array.isArray(audience?.visibleTo) ? audience!.visibleTo.slice(0, 100) : undefined;
+  const restrictedGroups =
+    restrictedTo && audience?.visibleToGroups?.length ? audience.visibleToGroups.slice(0, 20) : undefined;
   member.signal = {
     setAt: now,
     // Available at least the chosen window, and long enough to cover every
@@ -497,12 +531,17 @@ export function setSignal(
     expiresAt: Math.max(now + windowMins * 60_000, ...stored.map((a) => a.expiresAt)),
     note: note?.trim().slice(0, 80) || undefined,
     activities: stored,
+    ...(restrictedTo ? { visibleTo: restrictedTo } : {}),
+    ...(restrictedGroups ? { visibleToGroups: restrictedGroups } : {}),
   };
   broadcastMember(member);
   if (!wasActive) {
+    // Only the audience is told you went available — never a friend you
+    // deliberately left out.
     for (const fid of member.friends) {
       const friend = members.get(fid);
-      if (friend) emit({ type: "went-available", member, friend, live: hasLiveSubscriber(fid) });
+      if (friend && signalAudienceIncludes(member, fid))
+        emit({ type: "went-available", member, friend, live: hasLiveSubscriber(fid) });
     }
   }
   return entryFor(member, member.id);
@@ -623,6 +662,9 @@ interface Opportunity {
   audienceLabel?: string;
   createdAt: number;
   expiresAt: number;
+  /** Scheduled posts carry the proposed activity window; open-ended ones don't. */
+  startsAt?: number;
+  endsAt?: number;
 }
 
 export interface OpportunityView {
@@ -632,6 +674,9 @@ export interface OpportunityView {
   postedAt: string;
   expiresAt: string;
   mine: boolean;
+  /** Proposed activity window (ISO), when the post is scheduled for a set time. */
+  startsAt?: string;
+  endsAt?: string;
   /** Only present on your own posts — recipients never see the list. */
   audience?: "all" | string[];
   /** Poster only: the group name the audience came from, if any. */
@@ -641,8 +686,13 @@ export interface OpportunityView {
 const opportunities = new Map<string, Opportunity>();
 const OPP_MAX_ACTIVE = 5;
 const OPP_DEFAULT_MINS = 240;
-// Posts are more asynchronous than signals ("Saturday?") — allow up to a day.
-const clampOppMins = (m: number) => Math.min(1440, Math.max(15, Math.round(m)));
+// Open-ended posts ("sometime") are asynchronous — allow them to stand up to
+// two weeks. Scheduled posts set their own window and bypass this clamp.
+const clampOppMins = (m: number) => Math.min(20_160, Math.max(15, Math.round(m)));
+// How far ahead a post may be scheduled, and how long a scheduled post lingers
+// past its start when no explicit end time is given.
+const OPP_MAX_SCHEDULE_MS = 60 * 24 * 60 * 60_000;
+const OPP_SCHEDULE_TAIL_MS = 3 * 60 * 60_000;
 const lastPost = new Map<string, number>();
 
 function oppView(o: Opportunity, viewerId: string): OpportunityView {
@@ -654,6 +704,8 @@ function oppView(o: Opportunity, viewerId: string): OpportunityView {
     postedAt: new Date(o.createdAt).toISOString(),
     expiresAt: new Date(o.expiresAt).toISOString(),
     mine: o.fromId === viewerId,
+    ...(o.startsAt ? { startsAt: new Date(o.startsAt).toISOString() } : {}),
+    ...(o.endsAt ? { endsAt: new Date(o.endsAt).toISOString() } : {}),
     ...(o.fromId === viewerId ? { audience: o.audience } : {}),
     ...(o.fromId === viewerId && o.audienceLabel ? { audienceLabel: o.audienceLabel } : {}),
   };
@@ -682,6 +734,7 @@ export function postOpportunity(
   audience: "all" | string[],
   minutes?: number,
   audienceLabel?: string,
+  when?: { startsAt: number; endsAt?: number },
 ): { ok: true; opportunity: OpportunityView } | { ok: false; error: string } {
   const body = text.trim().slice(0, 200);
   if (!body) return { ok: false, error: "empty_text" };
@@ -693,6 +746,27 @@ export function postOpportunity(
   const aud: Opportunity["audience"] =
     audience === "all" ? "all" : [...new Set(audience)].filter((id) => from.friends.has(id));
   if (aud !== "all" && !aud.length) return { ok: false, error: "empty_audience" };
+
+  // A scheduled post carries a future activity window and derives its own
+  // expiry (end time, or a short tail past the start); an open-ended one just
+  // stands for a chosen duration.
+  let startsAt: number | undefined;
+  let endsAt: number | undefined;
+  let expiresAt: number;
+  if (when && Number.isFinite(when.startsAt)) {
+    startsAt = Math.round(when.startsAt);
+    if (startsAt < now - 60_000) return { ok: false, error: "bad_time" };
+    if (startsAt > now + OPP_MAX_SCHEDULE_MS) return { ok: false, error: "bad_time" };
+    if (when.endsAt !== undefined && Number.isFinite(when.endsAt)) {
+      const end = Math.round(when.endsAt);
+      // Only honour an end that's after the start and within a day of it.
+      if (end > startsAt && end - startsAt <= 24 * 60 * 60_000) endsAt = end;
+    }
+    expiresAt = endsAt ?? startsAt + OPP_SCHEDULE_TAIL_MS;
+  } else {
+    expiresAt = now + clampOppMins(minutes ?? OPP_DEFAULT_MINS) * 60_000;
+  }
+
   lastPost.set(from.id, now);
   const opp: Opportunity = {
     id: `opp_${randomUUID()}`,
@@ -701,14 +775,16 @@ export function postOpportunity(
     audience: aud,
     ...(audienceLabel?.trim() ? { audienceLabel: audienceLabel.trim().slice(0, 60) } : {}),
     createdAt: now,
-    expiresAt: now + clampOppMins(minutes ?? OPP_DEFAULT_MINS) * 60_000,
+    expiresAt,
+    ...(startsAt ? { startsAt } : {}),
+    ...(endsAt ? { endsAt } : {}),
   };
   opportunities.set(opp.id, opp);
   // The poster's own (other) devices learn about it too.
   sendTo(from.id, "opportunity", { opportunity: oppView(opp, from.id) });
   for (const r of oppRecipients(opp)) {
     const live = sendTo(r.id, "opportunity", { opportunity: oppView(opp, r.id) });
-    emit({ type: "opportunity", from, to: r, text: body, expiresAt: opp.expiresAt, live });
+    emit({ type: "opportunity", from, to: r, text: body, expiresAt: opp.expiresAt, startsAt, endsAt, live });
   }
   return { ok: true, opportunity: oppView(opp, from.id) };
 }

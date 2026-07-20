@@ -39,11 +39,12 @@ your friends see nothing of you.
 | Action | How |
 |---|---|
 | Show / hide | `Ctrl/Cmd+Shift+Space` (rebindable in settings), tray click, `Esc`/`✕` close to tray (Huddle keeps running), `–` minimizes to the taskbar. Quit via the tray menu. The overlay stays on screen until you explicitly hide it, and the window auto-sizes to your friends list. |
-| Go available | `+` in the header opens the composer: 30/60/90 min or custom (15–180), tick call types — each with **two optional times**: how long the offer stands ("offer", counts down) and the expected call length ("~call") — plus an optional note. Chips read "AI evals (~5min call)" — the offer countdown lives in the row above and only appears on a chip when that call type expires earlier than the signal. |
+| The `+` menu | `+` in the header opens a small chooser: **I'm up for a call now** (go available) or **Propose something for later** (a coordination opportunity). Both composers step `back` to this chooser. |
+| Go available | From the `+` chooser → "up for a call now": 30/60/90 min or custom (15–180), tick call types — each with **two optional times**: how long the offer stands ("offer", counts down) and the expected call length ("~call") — plus an optional note. Chips read "AI evals (~5min call)" — the offer countdown lives in the row above and only appears on a chip when that call type expires earlier than the signal. |
 | Call type presets | click "Me (inactive)" (or settings → Call type presets…): add/remove and set per-preset visibility (everyone / **groups** / specific friends — mixable). Group visibility is a **live reference**: whoever is in the group when someone looks sees the call type, so editing "close" later changes visibility everywhere it's used. Defaults: get unstuck on a task, help me escape a local minimum, meditation, coworking, body doubling |
 | Ping a friend | 👋 on their row — toast + notification on their overlay (throttled; tells you if they're offline) |
 | Call a friend | `call` on an available friend's row sends a request; **they must accept** — then the room opens for both, with a **Copy link** button on the toast (e.g. to reshare over Messenger). The room is your own link if you set one (settings → My call link, e.g. a Google Meet), otherwise a fresh room from the server's `HUDDLE_CALL_LINK` template (`{room}` replaced per call; default Jitsi). Requests expire after 2 min and are single-use. |
-| Post an opportunity | 📣 in the header — write what you're proposing ("climbing Saturday morning?"), pick who sees it (**everyone**, a saved **group** in one tap, or tick **specific friends**) and how long it stands (1h/4h/24h or custom, up to a day, default 4h). It appears under **opportunities** on recipients' overlays with a notification; offline recipients get it on Telegram if linked. Recipients 👋 the poster to show interest; only you can take your post down (×), and it expires on its own. Max 5 open posts. Telegram: `/post climbing Saturday?` posts to all friends, `/post to close: sauna?` posts to a group, `/post 90 to Ada, Bob: …` to named friends, and `/status` lists open posts. |
+| Propose an opportunity | From the `+` chooser → "Propose something for later" — write what you're proposing ("climbing Saturday morning?"), pick who sees it (**everyone**, a saved **group** in one tap, or tick **specific friends**), then choose **when**: **Sometime** (open-ended — how long the post stands: 4h/1d/3d/1w or custom up to two weeks, default 1d) or **At a set time** (pick a day, a start time, and an optional end — the post then reads as that window, e.g. "📅 Sat, Jul 25, 18:00–21:00", and stays up until the time passes, schedulable up to ~2 months out). It appears under **opportunities** on recipients' overlays with a notification; offline recipients get it on Telegram if linked. Recipients 👋 the poster to show interest; only you can take your post down (×), and it expires on its own. Max 5 open posts. Telegram `/post` still posts open-ended opportunities: `/post climbing Saturday?` to all friends, `/post to close: sauna?` to a group, `/post 90 to Ada, Bob: …` to named friends, and `/status` lists open posts (scheduled ones show their time). |
 | Friend groups | settings → **Friend groups**: name a set of friends ("close", "climbing crew"), tick who's in it, then use it anywhere an audience is picked — post to it in one tap from the 📣 composer (a group chip pre-ticks its members; hand-editing the ticks turns the selection ad-hoc again), or set a call type's visibility to it. Groups live server-side, so Telegram shares them: `/groups` lists, `/groups set close Ada, Bob` creates/replaces, `/groups rm close` deletes. Groups are private to you — recipients never learn a group exists or who else is in it. Max 20 groups. |
 | Quick-set from tray | right-click tray → "Available for 60 min" |
 | Add / remove friends | settings → **My friend code** (click to copy, rotatable — rotation doesn't affect existing friends) to be added; paste a friend's code under **Friends** to add them. Removing a friend (×) is mutual — you disappear from each other's rosters. |
@@ -68,3 +69,22 @@ Local state (token, server, name, activities, settings) lives in
 
 Packaging/installers (currently `npm start` only — autostart also only takes
 effect once packaged), extend-nudge, multiple groups. See spec §10.
+
+### Coordination-opportunity ideas (future)
+
+Building on scheduled/open-ended proposals — noted here so they aren't lost:
+
+- **Multi-party opportunities**: a post that needs an "activation count" — it
+  only fires (or nudges everyone) once N friends have shown interest ("3 people
+  and we do it"), rather than being a pure one-way broadcast. The 👋 interest
+  primitive already exists to build on.
+- **Calendar availability**: let people mark free windows in the future and
+  match proposals against them, instead of one-off scheduled posts. Would also
+  benefit from a per-user timezone (see below).
+- **Start-time reminders**: ping recipients (overlay + Telegram) when a
+  scheduled opportunity is about to start, not just when it's posted.
+- **Scheduling from Telegram**: `/post` is open-ended only; a natural-language
+  or explicit time syntax for scheduled posts over Telegram is a follow-up.
+- **Per-user timezones**: scheduled times are formatted in the viewer's local
+  zone in the overlay, but Telegram notifications fall back to the server's
+  zone (Telegram gives us no per-user zone). Store a member timezone to fix.

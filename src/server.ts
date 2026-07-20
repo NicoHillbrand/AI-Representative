@@ -34,6 +34,7 @@ import {
   resolveGroup,
   type Member,
   type Activity,
+  type SignalAudience,
 } from "./presence/store.js";
 import { startTelegramBridge, telegramEnabled, telegramBotUsername } from "./presence/telegram.js";
 import { randomBytes } from "node:crypto";
@@ -386,7 +387,7 @@ app.delete("/api/presence/groups/:name", (req, res) => {
 app.post("/api/presence/signal", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
-  const { windowMinutes, note, activities } = req.body ?? {};
+  const { windowMinutes, note, activities, visibleTo, visibleToGroups } = req.body ?? {};
   if (typeof windowMinutes !== "number" || !Number.isFinite(windowMinutes)) {
     res.status(400).json({
       error: "bad_request",
@@ -394,11 +395,23 @@ app.post("/api/presence/signal", (req, res) => {
     });
     return;
   }
+  // Optional signal-level audience (who sees you're up at all). Absent or
+  // "all" keeps the historical behavior: every friend. Same shape as an
+  // activity's visibility.
+  const audience: SignalAudience | undefined = Array.isArray(visibleTo)
+    ? {
+        visibleTo: visibleTo.filter((v: unknown): v is string => typeof v === "string").slice(0, 100),
+        ...(Array.isArray(visibleToGroups)
+          ? { visibleToGroups: visibleToGroups.filter((v: unknown): v is string => typeof v === "string").slice(0, 20) }
+          : {}),
+      }
+    : undefined;
   const entry = setSignal(
     member,
     windowMinutes,
     typeof note === "string" ? note : undefined,
     parseActivities(activities),
+    audience,
   );
   res.json(entry);
 });
@@ -450,12 +463,12 @@ app.post("/api/presence/call-accept", (req, res) => {
 app.post("/api/presence/opportunities", (req, res) => {
   const member = presenceMember(req, res);
   if (!member) return;
-  const { text, audience, minutes } = req.body ?? {};
+  const { text, audience, minutes, startsAt, endsAt } = req.body ?? {};
   if (typeof text !== "string" || !text.trim()) {
     res.status(400).json({
       error: "bad_request",
       message:
-        'Body must be { text: string, audience?: "all" | memberId[] | {group: name}, minutes?: number }.',
+        'Body must be { text: string, audience?: "all" | memberId[] | {group: name}, minutes?: number, startsAt?: ISO, endsAt?: ISO }.',
     });
     return;
   }
@@ -473,7 +486,18 @@ app.post("/api/presence/opportunities", (req, res) => {
     audLabel = group.name;
   }
   const mins = typeof minutes === "number" && Number.isFinite(minutes) ? minutes : undefined;
-  const result = postOpportunity(member, text, aud, mins, audLabel);
+  // A scheduled post: startsAt (and optional endsAt) as ISO strings or epoch ms.
+  const toEpoch = (v: unknown): number | undefined => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const t = Date.parse(v);
+      if (Number.isFinite(t)) return t;
+    }
+    return undefined;
+  };
+  const startEpoch = toEpoch(startsAt);
+  const when = startEpoch !== undefined ? { startsAt: startEpoch, endsAt: toEpoch(endsAt) } : undefined;
+  const result = postOpportunity(member, text, aud, mins, audLabel, when);
   if (!result.ok) {
     res
       .status(result.error === "too_fast" || result.error === "too_many" ? 429 : 400)

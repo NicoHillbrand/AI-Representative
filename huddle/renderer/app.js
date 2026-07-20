@@ -10,11 +10,12 @@ let cfg = {};
 const members = new Map(); // memberId -> roster entry (as this viewer sees it)
 const opps = new Map(); // opportunityId -> post (as this viewer sees it)
 let selectedMins = 60;
-// Post composer state: audience + how long the post stands.
+// Post composer state: audience + when (open-ended "sometime" vs a set time).
 let postAll = true;
 const postSelected = new Set(); // memberIds, when postAll is false
 let postGroup = null; // group name, when the selection came from a group untouched
-let postMins = 240;
+let postMins = 1440;
+let postWhen = "sometime"; // "sometime" | "scheduled"
 // Named friend groups — server-side (shared with Telegram), synced via the
 // roster payload and "groups" events.
 let myGroups = [];
@@ -54,9 +55,11 @@ function remainingMin(entry) {
   return Math.max(0, Math.round((new Date(entry.availableUntil) - Date.now()) / 60_000));
 }
 
-// "45 min" below two hours, "3h" above — posts can stand for a day.
+// "45 min" below two hours, "3h" up to a day, "5d" beyond — open-ended posts
+// can stand for a couple of weeks.
 function fmtLeft(iso) {
   const mins = Math.max(0, Math.round((new Date(iso) - Date.now()) / 60_000));
+  if (mins >= 1440) return `${Math.round(mins / 1440)}d`;
   return mins >= 120 ? `${Math.round(mins / 60)}h` : `${mins} min`;
 }
 
@@ -387,6 +390,18 @@ function oppAudienceText(o) {
     : `to ${o.audience.length} friends`;
 }
 
+// Scheduled posts read as their activity window ("📅 Sat, Jul 25, 18:00–21:00");
+// open-ended ones just count down how much longer they stand.
+function oppWhenText(o) {
+  if (!o.startsAt) return `sometime · ${fmtLeft(o.expiresAt)} left`;
+  const start = new Date(o.startsAt);
+  const day = start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const clock = (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return o.endsAt
+    ? `📅 ${day}, ${clock(start)}–${clock(new Date(o.endsAt))}`
+    : `📅 ${day}, ${clock(start)}`;
+}
+
 /** Main view: active posts addressed to you (or by you), newest first. */
 function renderOpps() {
   const list = $("opps");
@@ -408,7 +423,7 @@ function renderOpps() {
       text.textContent = o.text;
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.textContent = `${fmtLeft(o.expiresAt)} left${o.mine ? ` · ${oppAudienceText(o)}` : ""}`;
+      meta.textContent = `${oppWhenText(o)}${o.mine ? ` · ${oppAudienceText(o)}` : ""}`;
       info.append(name, text, meta);
 
       const actions = document.createElement("div");
@@ -818,8 +833,33 @@ async function sendPing(m) {
 
 function chosenPostMinutes() {
   const custom = Number($("post-custom-mins").value);
-  if ($("post-custom-mins").value && custom >= 15 && custom <= 1440) return Math.round(custom);
+  if ($("post-custom-mins").value && custom >= 15 && custom <= 20160) return Math.round(custom);
   return postMins;
+}
+
+// Read the scheduled date/time inputs into ISO start (+ optional end). Returns
+// null (and toasts) if the inputs are incomplete or in the past. A same-day end
+// that lands before the start is read as the next day (e.g. 23:00 → 01:00).
+function chosenSchedule() {
+  const date = $("post-date").value;
+  const start = $("post-start").value;
+  if (!date || !start) {
+    toast("Pick a day and a start time.");
+    return null;
+  }
+  const startDt = new Date(`${date}T${start}`);
+  if (isNaN(startDt) || startDt.getTime() < Date.now() - 60_000) {
+    toast("Pick a time in the future.");
+    return null;
+  }
+  const out = { startsAt: startDt.toISOString() };
+  const end = $("post-end").value;
+  if (end) {
+    let endDt = new Date(`${date}T${end}`);
+    if (endDt.getTime() <= startDt.getTime()) endDt = new Date(endDt.getTime() + 86_400_000);
+    out.endsAt = endDt.toISOString();
+  }
+  return out;
 }
 
 async function sendPost() {
@@ -830,9 +870,17 @@ async function sendPost() {
   const audience = postAll ? "all" : postGroup ? { group: postGroup } : [...postSelected];
   if (Array.isArray(audience) && !audience.length)
     return toast("Pick at least one friend to post to.");
+  const payload = { text, audience };
+  if (postWhen === "scheduled") {
+    const when = chosenSchedule();
+    if (!when) return;
+    Object.assign(payload, when);
+  } else {
+    payload.minutes = chosenPostMinutes();
+  }
   const res = await api("/api/presence/opportunities", {
     method: "POST",
-    body: JSON.stringify({ text, audience, minutes: chosenPostMinutes() }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -841,9 +889,11 @@ async function sendPost() {
         ? "You already have 5 open posts — take one down first."
         : body.error === "too_fast"
           ? "Easy — you just posted. Give it a moment."
-          : body.error === "empty_audience" || body.error === "unknown_group"
-            ? "That group is empty or gone — pick friends directly."
-            : "Couldn't post — are you online?",
+          : body.error === "bad_time"
+            ? "Pick a time between now and two months out."
+            : body.error === "empty_audience" || body.error === "unknown_group"
+              ? "That group is empty or gone — pick friends directly."
+              : "Couldn't post — are you online?",
     );
   }
   const { opportunity } = await res.json();
@@ -873,7 +923,7 @@ async function signOut(message) {
 // --- window sizing ---------------------------------------------------------------------
 // The window hugs its content: header + whichever view is active. A
 // MutationObserver keeps it honest through roster changes, editors, chips.
-const VIEWS = ["onboarding", "main", "settings", "interests", "manage", "post"];
+const VIEWS = ["onboarding", "main", "settings", "compose", "interests", "manage", "post"];
 let fitScheduled = false;
 function fitWindow() {
   if (fitScheduled) return;
@@ -899,10 +949,31 @@ function showView(name) {
   fitWindow();
 }
 
+function openCompose() {
+  if (!cfg.deviceToken) return;
+  showView("compose");
+}
+
 function openInterests() {
   if (!cfg.deviceToken) return;
   renderActivitySelect();
   showView("interests");
+}
+
+// Toggle the post composer between open-ended and a set time; prefill the day
+// with today the first time the scheduled inputs appear.
+function setPostWhen(w) {
+  postWhen = w;
+  for (const b of document.querySelectorAll("#post-when-seg .preset"))
+    b.classList.toggle("selected", b.dataset.when === w);
+  $("post-sometime").hidden = w !== "sometime";
+  $("post-scheduled").hidden = w !== "scheduled";
+  if (w === "scheduled" && !$("post-date").value) {
+    const now = new Date();
+    $("post-date").value = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+      .toISOString()
+      .slice(0, 10);
+  }
 }
 
 function openManage() {
@@ -913,6 +984,7 @@ function openManage() {
 
 function openPost() {
   if (!cfg.deviceToken) return;
+  setPostWhen("sometime");
   renderPostAudience();
   showView("post");
 }
@@ -1236,21 +1308,28 @@ $("custom-mins").addEventListener("input", () => {
       ?.classList.add("selected");
 });
 
-// Post composer: same preset pattern, its own state (posts can stand for 24h).
-for (const btn of document.querySelectorAll("#post .preset")) {
+// Sometime/set-time segment picks the composer mode.
+for (const btn of document.querySelectorAll("#post-when-seg .preset"))
+  btn.addEventListener("click", () => setPostWhen(btn.dataset.when));
+
+// "Stands for" presets — same pattern as availability, scoped so they don't
+// clash with the when-segment above (posts can stand up to two weeks).
+for (const btn of document.querySelectorAll("#post-sometime .preset")) {
   btn.addEventListener("click", () => {
     postMins = Number(btn.dataset.mins);
     $("post-custom-mins").value = "";
     $("post-custom-mins").classList.remove("selected");
-    document.querySelectorAll("#post .preset").forEach((b) => b.classList.toggle("selected", b === btn));
+    document
+      .querySelectorAll("#post-sometime .preset")
+      .forEach((b) => b.classList.toggle("selected", b === btn));
   });
 }
 $("post-custom-mins").addEventListener("input", () => {
   const has = !!$("post-custom-mins").value;
   $("post-custom-mins").classList.toggle("selected", has);
-  document.querySelectorAll("#post .preset").forEach((b) => b.classList.toggle("selected", false));
+  document.querySelectorAll("#post-sometime .preset").forEach((b) => b.classList.toggle("selected", false));
   if (!has)
-    document.querySelector(`#post .preset[data-mins="${postMins}"]`)?.classList.add("selected");
+    document.querySelector(`#post-sometime .preset[data-mins="${postMins}"]`)?.classList.add("selected");
 });
 
 $("act-add-btn").addEventListener("click", addActivity);
@@ -1264,19 +1343,27 @@ $("min-btn").addEventListener("click", () => window.huddle.minimizeWindow());
 // Close-to-tray, like other tray apps: quitting lives in the tray menu.
 $("close-btn").addEventListener("click", () => window.huddle.hideWindow());
 $("settings-btn").addEventListener("click", () => {
-  if (cfg.deviceToken) openSettings();
+  if (!cfg.deviceToken) return;
+  // Toggle: the gear closes settings again if they're already open.
+  if (!$("settings").hidden) showView("main");
+  else openSettings();
 });
-$("settings-back").addEventListener("click", () => showView("main"));
-// + toggles the composer open/closed.
+$("settings-close").addEventListener("click", () => showView("main"));
+// Clicking the "huddle" wordmark always returns to the friends list.
+$("brand").addEventListener("click", () => {
+  if (cfg.deviceToken) showView("main");
+});
+// + toggles the chooser open/closed; the chooser routes to either composer.
 $("interests-btn").addEventListener("click", () => {
-  $("interests").hidden ? openInterests() : showView("main");
+  const open = !$("compose").hidden || !$("interests").hidden || !$("post").hidden;
+  open ? showView("main") : openCompose();
 });
-$("interests-back").addEventListener("click", () => showView("main"));
-// 📣 toggles the post composer the same way.
-$("post-btn").addEventListener("click", () => {
-  $("post").hidden ? openPost() : showView("main");
-});
-$("post-back").addEventListener("click", () => showView("main"));
+$("compose-call").addEventListener("click", openInterests);
+$("compose-propose").addEventListener("click", openPost);
+$("compose-back").addEventListener("click", () => showView("main"));
+// Both composers step back to the chooser they came from.
+$("interests-back").addEventListener("click", () => showView("compose"));
+$("post-back").addEventListener("click", () => showView("compose"));
 $("post-send").addEventListener("click", sendPost);
 $("post-text").addEventListener("keydown", (e) => e.key === "Enter" && sendPost());
 $("self-off").addEventListener("click", openManage);
