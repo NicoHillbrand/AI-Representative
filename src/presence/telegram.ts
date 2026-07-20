@@ -609,29 +609,33 @@ async function chatWithRepresentative(chatId: number, text: string): Promise<voi
 
 // --- command overview --------------------------------------------------------------
 // One source of truth for "what can I do here": /help shows it, and every
-// fresh /start (with or without a link code) opens with it.
-const NEGOTIATE_HELP =
-  "/negotiate — tell me what you're looking for; mutual interests with my principal get confirmed bilaterally, /done gives you the summary";
-
+// fresh /start (with or without a link code) opens with it. Split into the two
+// worlds this bot serves — coordinating with friends (Huddle) and talking to
+// Nico's AI representative.
 function commandOverview(member: Member | undefined): string {
   return member
-    ? `/up — go available (buttons: call type, how long, call length, who sees it)
-/post — post a coordination opportunity (buttons: text, who sees it, how long)
-/presets — your call types, edited with buttons (each is just a topic)
-/groups — make & edit friend groups with buttons
-/status — who's up for a call, plus open posts
+    ? `🟢 Huddle — coordinate calls & activities with friends:
+/up — go available for a spontaneous call right now
+/post — propose something for later (a set time, or open-ended)
+/status — who's up for a call, or other coordination opportunities
 /clear — stop being available
-/code — your friend code to share
-/addfriend <code> — add a friend
-${NEGOTIATE_HELP}
-/new — fresh chat context (the representative forgets earlier messages)
+/presets — your call/activity types
+/groups — your friend groups
+/code — your friend code (others add you with it)
+/addfriend <code> — add a friend by their code
 /unlink — disconnect Telegram
-Anything else: chat with the representative.`
-    : `Ask me anything about my principal — just type.
-${NEGOTIATE_HELP}
-/join <friend-code> <name> — join the Huddle circle right here on Telegram (no install), or link an existing overlay from its settings.
-/new — fresh chat context (the representative forgets earlier messages)
-/help — show this overview again.`;
+
+💬 Nico's AI representative:
+Just type a message to chat with it.
+/new — fresh chat (forget earlier messages)`
+    : `💬 Nico's AI representative:
+Ask me anything about Nico — just type.
+/new — fresh chat (forget earlier messages)
+
+🟢 Huddle — coordinate with Nico & friends:
+/join <friend-code> <name> — join right here on Telegram (no install), or link an existing overlay from its settings.
+
+/help — show this again.`;
 }
 
 // --- incoming --------------------------------------------------------------------
@@ -1368,20 +1372,18 @@ export async function startTelegramBridge(): Promise<void> {
   // as autocomplete while typing) — same catalog as /help.
   void tg("setMyCommands", {
     commands: [
-      { command: "help", description: "Overview of everything you can do" },
-      { command: "up", description: "Go available — pick type, length, and who sees it" },
-      { command: "post", description: "Post a coordination opportunity (buttons)" },
-      { command: "presets", description: "Edit your call types (buttons)" },
-      { command: "status", description: "Who's up for a call, plus open posts" },
+      { command: "up", description: "Go available for a spontaneous call now" },
+      { command: "post", description: "Propose something for later (set time or open-ended)" },
+      { command: "status", description: "Who's up, or other coordination opportunities" },
       { command: "clear", description: "Stop being available" },
-      { command: "groups", description: "Make & edit friend groups (buttons)" },
-      { command: "code", description: "Your friend code to share" },
+      { command: "presets", description: "Your call/activity types" },
+      { command: "groups", description: "Your friend groups" },
+      { command: "code", description: "Your friend code (others add you with it)" },
       { command: "addfriend", description: "Add a friend by their code" },
-      { command: "negotiate", description: "Find mutual interests, disclosed only when mutual" },
-      { command: "done", description: "End the negotiation with a summary" },
-      { command: "new", description: "Fresh chat context — forget earlier messages" },
-      { command: "join", description: "Join the Huddle circle with a friend code" },
+      { command: "new", description: "Fresh chat with Nico's representative" },
+      { command: "join", description: "Join Huddle with a friend code" },
       { command: "unlink", description: "Disconnect Telegram notifications" },
+      { command: "help", description: "Show the command overview" },
     ],
   });
   console.log(`Telegram bridge active: @${botUsername}`);
