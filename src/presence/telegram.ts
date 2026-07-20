@@ -837,7 +837,11 @@ async function onMessage(msg: any): Promise<void> {
   // buttons (compose → audience → how long); a typed "/post [minutes]
   // [to <names>:] <text>" still works as a shortcut.
   if (member && text.trim() === "/post") {
-    await promptFor(chatId, { kind: "post-text" }, "📣 What do you want to post? Send the text — I'll ask who sees it and for how long.");
+    await promptFor(
+      chatId,
+      { kind: "post-text" },
+      "📣 What coordination opportunity do you want to share, or what activity do you want others to coordinate with you on?\nSend the text — I'll then ask who sees it and for how long.",
+    );
     return;
   }
   if (member && text.startsWith("/post")) {
