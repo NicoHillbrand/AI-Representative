@@ -914,22 +914,29 @@ async function onMessage(msg: any): Promise<void> {
   }
 
   if (member && text === "/status") {
-    const up = roster(member).filter((m) => m.available && m.memberId !== member.id);
-    const availability = up.length
-      ? "Up for a call:\n" +
-        up
-          .map(
-            (m) =>
-              `🟢 ${m.displayName}${
-                m.activities?.length
-                  ? ` — ${m.activities
-                      .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
-                      .join(", ")}`
-                  : ""
-              }${m.note ? ` (${m.note})` : ""}`,
-          )
-          .join("\n")
-      : "Nobody's signaled right now.";
+    const roll = roster(member);
+    const detail = (m: (typeof roll)[number]) =>
+      `${
+        m.activities?.length
+          ? ` — ${m.activities
+              .map((a) => `${a.label}${a.durationMinutes ? ` (~${a.durationMinutes}min call)` : ""}`)
+              .join(", ")}`
+          : ""
+      }${m.note ? ` (${m.note})` : ""}`;
+    // Your own signal first, so you can see (and sanity-check) what you set.
+    const me = roll.find((m) => m.memberId === member.id);
+    const myLeft = me?.availableUntil
+      ? Math.round((new Date(me.availableUntil).getTime() - Date.now()) / 60_000)
+      : 0;
+    const mine = me?.available
+      ? `You're up for ~${fmtMins(myLeft)}${detail(me)}`
+      : "You're not signaled right now (/up to go available).";
+    const up = roll.filter((m) => m.available && m.memberId !== member.id);
+    const availability =
+      `Your status:\n${me?.available ? "🟢 " : "⚪ "}${mine}\n\n` +
+      (up.length
+        ? "Up for a call:\n" + up.map((m) => `🟢 ${m.displayName}${detail(m)}`).join("\n")
+        : "No one else is up right now.");
     // Telegram-only members have no overlay — /status is where they see
     // which coordination posts are still open.
     const posts = opportunitiesFor(member);
