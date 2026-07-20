@@ -153,114 +153,120 @@ function applyAvailability(
   return `🟢 You're reachable for ${mm} min${actText ? ` — ${actText}` : ""}${noteText}${audText}. Your friends' overlays just updated.`;
 }
 
-// --- /up picker --------------------------------------------------------------------
-// Bare /up opens this picker — the ONLY way to go available from Telegram, by
-// design: there's no typed syntax to remember. It offers, as toggleable inline
-// buttons: your call-type presets (the same catalog the overlay composer
-// offers, synced via POST /api/presence/presets), how long you're reachable,
-// the expected call length, and who can see it (friends/groups — nothing
-// ticked means everyone).
-interface Picker {
-  /** Snapshots at open time — keep callback indices valid if the underlying
-   * lists change while the picker is open. */
+// --- /up wizard --------------------------------------------------------------------
+// Bare /up walks you through going available ONE STEP AT A TIME, each its own
+// message: activity (a preset or your own) → optional detail → how long you're
+// up → call length → who can see it. Presets are only edited via /presets;
+// here they're just quick choices. Every typed step echoes a confirmation.
+interface UpWizard {
+  step: "activity" | "detail" | "window" | "call" | "audience";
   presets: Preset[];
   friends: { memberId: string; displayName: string }[];
   groups: FriendGroup[];
-  selected: Set<number>; // chosen preset (activity) indices
-  audFriends: Set<number>; // chosen friend indices → the audience
-  audGroups: Set<number>; // chosen group indices → the audience
+  activityLabel?: string; // chosen preset label or typed activity
+  fromPreset: boolean; // preset chosen (→ detail is an optional note) vs typed
+  note?: string; // detail refining a preset
   mins: number; // how long you're reachable
-  callMins?: number; // expected call length (undefined = unspecified)
-  /** Typed-in-the-moment text: the activity itself if no preset is ticked,
-   * otherwise a note refining the chosen presets. Presets are skippable. */
-  note?: string;
-  /** The picker's own message, so a typed note can re-render it in place
-   * instead of dropping the other choices. */
-  messageId?: number;
+  callMins?: number; // expected call length (undefined = unset)
+  audEveryone: boolean; // audience = all friends (the default)
+  audFriends: Set<number>;
+  audGroups: Set<number>;
+  /** The current step's message, so a typed answer can confirm on it and
+   * toggles can re-render in place. */
+  stepMessageId?: number;
 }
-const pickers = new Map<number, Picker>(); // telegram chatId -> open picker
+const upWizards = new Map<number, UpWizard>(); // telegram chatId -> wizard
 
 const PICKER_WINDOWS = [30, 60, 90];
 const PICKER_CALLS = [5, 15, 30, 60]; // call-length options, minutes
+const CANCEL_ROW = [{ text: "Cancel", callback_data: "uw:x" }];
 
-function pickerKeyboard(p: Picker) {
-  const rows: { text: string; callback_data: string }[][] = [];
-  // Call types (activities) — one per row. Presets are just topics, and are
-  // OPTIONAL: you can skip them and type your own with ✍️ below.
-  for (const [i, preset] of p.presets.entries())
-    rows.push([{ text: `${p.selected.has(i) ? "☑" : "☐"} ${preset.label}`, callback_data: `up:t:${i}` }]);
-  // How long you're reachable.
-  rows.push(
-    PICKER_WINDOWS.map((m) => ({
-      text: p.mins === m ? `· up ${m}m ·` : `up ${m}m`,
-      callback_data: `up:w:${m}`,
-    })),
-  );
-  // Expected call length (single-select; tap again to clear).
-  rows.push(
-    PICKER_CALLS.map((m) => ({
-      text: p.callMins === m ? `· call ${m}m ·` : `call ${m}m`,
-      callback_data: `up:d:${m}`,
-    })),
-  );
-  // Audience — groups first, then friends two-up. Nothing ticked = everyone.
-  for (const [i, g] of p.groups.entries())
-    rows.push([{ text: `${p.audGroups.has(i) ? "☑" : "☐"} #${g.name}`, callback_data: `up:ag:${i}` }]);
-  for (let i = 0; i < p.friends.length; i += 2) {
-    const row: { text: string; callback_data: string }[] = [];
-    for (const j of [i, i + 1]) {
-      const f = p.friends[j];
-      if (f) row.push({ text: `${p.audFriends.has(j) ? "☑" : "☐"} ${f.displayName}`, callback_data: `up:af:${j}` });
-    }
-    rows.push(row);
-  }
-  // Type your own activity/note (skip the presets), and save a new preset.
-  rows.push([{ text: p.note ? "✍️ Edit typed text" : "✍️ Type activity/note", callback_data: "up:note" }]);
-  rows.push([{ text: "➕ Save a call type", callback_data: "up:add" }]);
-  rows.push([
-    { text: "🟢 Go available", callback_data: "up:go" },
-    { text: "Cancel", callback_data: "up:x" },
-  ]);
-  return { inline_keyboard: rows };
-}
-
-function pickerText(p: Picker): string {
-  const base =
-    "Set yourself up for a call:\n" +
-    "• tick a call type, or ✍️ type your own (presets are optional)\n" +
-    "• how long you're reachable, and the call length\n" +
-    "• who can see it — tick friends/groups, or leave all blank for everyone\n" +
-    "Then tap Go.";
-  return p.note ? `${base}\n\n📝 ${p.note}` : base;
-}
-
-/** Send or update the picker message in place, keeping every current choice. */
-async function renderPicker(chatId: number, p: Picker): Promise<void> {
-  if (p.messageId !== undefined) {
-    await tg("editMessageText", {
-      chat_id: chatId,
-      message_id: p.messageId,
-      text: pickerText(p),
-      reply_markup: pickerKeyboard(p),
-    });
-  } else {
-    const sent = await dm(chatId, pickerText(p), { reply_markup: pickerKeyboard(p) });
-    p.messageId = sent?.message_id;
-  }
-}
-
-async function openPicker(chatId: number, member: Member): Promise<void> {
-  const picker: Picker = {
+async function startUpWizard(chatId: number, member: Member): Promise<void> {
+  const w: UpWizard = {
+    step: "activity",
     presets: presetsFor(member),
     friends: friendEntriesOf(member),
     groups: groupsFor(member),
-    selected: new Set(),
+    fromPreset: false,
+    mins: 60,
+    audEveryone: true,
     audFriends: new Set(),
     audGroups: new Set(),
-    mins: 60,
   };
-  pickers.set(chatId, picker);
-  await renderPicker(chatId, picker);
+  upWizards.set(chatId, w);
+  const rows = w.presets.map((p, i) => [{ text: p.label, callback_data: `uw:a:${i}` }]);
+  rows.push([{ text: "✍️ Type my own", callback_data: "uw:atype" }]);
+  rows.push(CANCEL_ROW);
+  const sent = await dm(chatId, "What do you want to do? Pick a call type, or type your own:", {
+    reply_markup: { inline_keyboard: rows },
+  });
+  w.stepMessageId = sent?.message_id;
+}
+
+// Preset chosen → detail is an OPTIONAL note (type it, or Skip).
+async function sendDetailStep(chatId: number, w: UpWizard): Promise<void> {
+  w.step = "detail";
+  pending.set(chatId, { kind: "uw-detail" });
+  const sent = await dm(chatId, `Add a detail to "${w.activityLabel}"? Type it below, or tap Skip:`, {
+    reply_markup: { inline_keyboard: [[{ text: "Skip", callback_data: "uw:dskip" }], CANCEL_ROW] },
+  });
+  w.stepMessageId = sent?.message_id;
+}
+
+// Skipped presets → the typed text IS the activity.
+async function sendTypeActivityStep(chatId: number, w: UpWizard): Promise<void> {
+  w.step = "activity";
+  pending.set(chatId, { kind: "uw-activity" });
+  const sent = await dm(chatId, "Type the activity you have in mind:", {
+    reply_markup: { inline_keyboard: [CANCEL_ROW] },
+  });
+  w.stepMessageId = sent?.message_id;
+}
+
+async function sendWindowStep(chatId: number, w: UpWizard): Promise<void> {
+  w.step = "window";
+  const rows = [PICKER_WINDOWS.map((m) => ({ text: `${m} min`, callback_data: `uw:w:${m}` })), CANCEL_ROW];
+  const sent = await dm(chatId, "How long are you up for?", { reply_markup: { inline_keyboard: rows } });
+  w.stepMessageId = sent?.message_id;
+}
+
+async function sendCallStep(chatId: number, w: UpWizard): Promise<void> {
+  w.step = "call";
+  const rows = [
+    PICKER_CALLS.map((m) => ({ text: `${m} min`, callback_data: `uw:c:${m}` })),
+    [{ text: "Not sure / skip", callback_data: "uw:cskip" }],
+    CANCEL_ROW,
+  ];
+  const sent = await dm(chatId, "How long is the call/activity itself?", { reply_markup: { inline_keyboard: rows } });
+  w.stepMessageId = sent?.message_id;
+}
+
+// Audience: Everyone (default, a built-in "group") + your groups + friends.
+// Multi-select; ticking anyone specific turns Everyone off, and clearing all
+// turns it back on.
+function audienceKeyboard(w: UpWizard) {
+  const rows: { text: string; callback_data: string }[][] = [];
+  rows.push([{ text: `${w.audEveryone ? "☑" : "☐"} 🌍 Everyone`, callback_data: "uw:ae" }]);
+  for (const [i, g] of w.groups.entries())
+    rows.push([{ text: `${w.audGroups.has(i) ? "☑" : "☐"} #${g.name}`, callback_data: `uw:g:${i}` }]);
+  for (let i = 0; i < w.friends.length; i += 2) {
+    const row: { text: string; callback_data: string }[] = [];
+    for (const j of [i, i + 1]) {
+      const f = w.friends[j];
+      if (f) row.push({ text: `${w.audFriends.has(j) ? "☑" : "☐"} ${f.displayName}`, callback_data: `uw:f:${j}` });
+    }
+    rows.push(row);
+  }
+  rows.push([{ text: "🟢 Go available", callback_data: "uw:go" }, { text: "Cancel", callback_data: "uw:x" }]);
+  return { inline_keyboard: rows };
+}
+
+async function sendAudienceStep(chatId: number, w: UpWizard): Promise<void> {
+  w.step = "audience";
+  const sent = await dm(chatId, "Who can see it? Everyone by default — or tick friends/groups, then Go:", {
+    reply_markup: audienceKeyboard(w),
+  });
+  w.stepMessageId = sent?.message_id;
 }
 
 // --- /post parsing ----------------------------------------------------------------
@@ -348,8 +354,9 @@ function resolveAudienceSegment(
 // ForceReply and capture the next plain message — no command syntax to
 // memorize. `pending` records what a chat's next plain-text message means.
 type Pending =
-  | { kind: "preset-add"; reopenUp?: boolean }
-  | { kind: "up-note" }
+  | { kind: "preset-add" }
+  | { kind: "uw-activity" } // /up wizard: typed custom activity
+  | { kind: "uw-detail" } // /up wizard: optional detail on a chosen preset
   | { kind: "group-new" }
   | { kind: "post-text" };
 const pending = new Map<number, Pending>();
@@ -369,14 +376,39 @@ async function handlePending(chatId: number, member: Member, p: Pending, text: s
     await openPostPicker(chatId, member, body);
     return;
   }
-  if (p.kind === "up-note") {
-    const picker = pickers.get(chatId);
-    if (!picker) {
-      await dm(chatId, "That picker expired — send /up again.");
+  if (p.kind === "uw-activity") {
+    const w = upWizards.get(chatId);
+    if (!w) {
+      await dm(chatId, "That wizard expired — send /up again.");
       return;
     }
-    picker.note = text.trim().slice(0, 80) || undefined;
-    await renderPicker(chatId, picker); // keeps every other choice intact
+    const label = text.trim().slice(0, 60);
+    if (!label) {
+      pending.set(chatId, { kind: "uw-activity" }); // re-arm; still waiting
+      await dm(chatId, "Empty — type the activity, or /up to start over.");
+      return;
+    }
+    w.activityLabel = label;
+    w.fromPreset = false;
+    if (w.stepMessageId !== undefined)
+      await tg("editMessageText", { chat_id: chatId, message_id: w.stepMessageId, text: `✍️ Activity: ${label}` });
+    await sendWindowStep(chatId, w);
+    return;
+  }
+  if (p.kind === "uw-detail") {
+    const w = upWizards.get(chatId);
+    if (!w) {
+      await dm(chatId, "That wizard expired — send /up again.");
+      return;
+    }
+    w.note = text.trim().slice(0, 80) || undefined;
+    if (w.stepMessageId !== undefined)
+      await tg("editMessageText", {
+        chat_id: chatId,
+        message_id: w.stepMessageId,
+        text: `✅ ${w.activityLabel}${w.note ? ` — ${w.note}` : ""}`,
+      });
+    await sendWindowStep(chatId, w);
     return;
   }
   if (p.kind === "preset-add") {
@@ -385,19 +417,8 @@ async function handlePending(chatId: number, member: Member, p: Pending, text: s
       await dm(chatId, "Empty — nothing added.");
       return;
     }
-    const updated = setPresets(member, [...presetsFor(member), { label, visibleTo: "all" }]);
-    const picker = p.reopenUp ? pickers.get(chatId) : undefined;
-    if (picker) {
-      // Reflect the new preset in the still-open picker and pre-tick it,
-      // preserving the window/call-length/audience already chosen.
-      picker.presets = updated;
-      picker.selected.add(updated.length - 1);
-      await renderPicker(chatId, picker);
-    } else if (p.reopenUp) {
-      await openPicker(chatId, member);
-    } else {
-      await openPresetsManager(chatId, member);
-    }
+    setPresets(member, [...presetsFor(member), { label, visibleTo: "all" }]);
+    await openPresetsManager(chatId, member);
     return;
   }
   if (p.kind === "group-new") {
@@ -888,9 +909,9 @@ async function onMessage(msg: any): Promise<void> {
   }
 
   if (member && text.startsWith("/up")) {
-    // Picker-only, by design — no typed syntax. Everything (call type,
-    // window, call length, audience) is set with the buttons.
-    await openPicker(chatId, member);
+    // Step-by-step wizard, by design — no typed syntax. One prompt per message:
+    // activity → detail → how long → call length → who sees it.
+    await startUpWizard(chatId, member);
     return;
   }
 
@@ -1077,104 +1098,116 @@ async function onCallback(cb: any): Promise<void> {
     return;
   }
 
-  // /up picker buttons: up:t:<i> toggle activity, up:w:<mins> window,
-  // up:d:<mins> call length, up:af:<i> toggle friend, up:ag:<i> toggle group
-  // (audience), up:go apply, up:x cancel. Toggles re-render in place.
-  if (member && chatId !== undefined && action === "up") {
-    const picker = pickers.get(chatId);
-    if (!picker) {
-      await answer("This picker expired — send /up again.");
+  // /up wizard steps (uw:*). Single-choice steps confirm on the current
+  // message and send the next prompt; the audience step multi-selects in place
+  // then uw:go applies. uw:x cancels.
+  if (member && chatId !== undefined && action === "uw") {
+    const w = upWizards.get(chatId);
+    if (!w) {
+      await answer("This wizard expired — send /up again.");
       return;
     }
-    if (args[0] === "x") {
-      pickers.delete(chatId);
+    const done = (text: string) =>
+      messageId !== undefined
+        ? tg("editMessageText", { chat_id: chatId, message_id: messageId, text })
+        : dm(chatId, text);
+    const sub = args[0];
+    if (sub === "x") {
+      upWizards.delete(chatId);
+      pending.delete(chatId);
       await answer();
-      if (messageId !== undefined)
-        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "Okay — not going available." });
+      await done("Okay — not going available.");
       return;
     }
-    if (args[0] === "go") {
-      pickers.delete(chatId);
-      const chosen = [...picker.selected].sort((a, b) => a - b).map((i) => picker.presets[i]);
-      // Availability audience: ticked groups (kept as live name refs) + ticked
-      // friends. Nothing ticked → everyone (undefined). The picker's call
-      // length, if set, overrides each activity's own default.
-      const audFriendIds = [...picker.audFriends]
-        .map((i) => picker.friends[i]?.memberId)
+    if (sub === "a") {
+      const p = w.presets[parseInt(args[1] ?? "", 10)];
+      if (!p) {
+        await answer("That call type is gone.");
+        return;
+      }
+      w.activityLabel = p.label;
+      w.fromPreset = true;
+      await answer();
+      await done(`✅ Activity: ${p.label}`);
+      await sendDetailStep(chatId, w);
+      return;
+    }
+    if (sub === "atype") {
+      await answer();
+      await done("✍️ Type your activity below.");
+      await sendTypeActivityStep(chatId, w);
+      return;
+    }
+    if (sub === "dskip") {
+      pending.delete(chatId);
+      await answer();
+      await done(`✅ Activity: ${w.activityLabel}`);
+      await sendWindowStep(chatId, w);
+      return;
+    }
+    if (sub === "w") {
+      const m = parseInt(args[1] ?? "", 10);
+      if (PICKER_WINDOWS.includes(m)) w.mins = m;
+      await answer();
+      await done(`✅ Up for ${w.mins} min`);
+      await sendCallStep(chatId, w);
+      return;
+    }
+    if (sub === "c" || sub === "cskip") {
+      if (sub === "c") {
+        const m = parseInt(args[1] ?? "", 10);
+        if (PICKER_CALLS.includes(m)) w.callMins = m;
+      }
+      await answer();
+      await done(w.callMins ? `✅ Call length: ~${w.callMins} min` : "✅ Call length: not set");
+      await sendAudienceStep(chatId, w);
+      return;
+    }
+    if (sub === "go") {
+      upWizards.delete(chatId);
+      const label = w.activityLabel?.trim();
+      const activities = label
+        ? [{ label, durationMinutes: w.callMins, visibleTo: "all" as const, visibleToGroups: undefined }]
+        : [];
+      const restricted = !w.audEveryone && (w.audFriends.size > 0 || w.audGroups.size > 0);
+      const audFriendIds = [...w.audFriends]
+        .map((i) => w.friends[i]?.memberId)
         .filter((x): x is string => !!x);
-      const audGroupNames = [...picker.audGroups]
-        .map((i) => picker.groups[i]?.name)
-        .filter((x): x is string => !!x);
+      const audGroupNames = [...w.audGroups].map((i) => w.groups[i]?.name).filter((x): x is string => !!x);
       const audLabels = [
         ...audGroupNames.map((n) => `#${n}`),
-        ...[...picker.audFriends].map((i) => picker.friends[i]?.displayName).filter((x): x is string => !!x),
+        ...[...w.audFriends].map((i) => w.friends[i]?.displayName).filter((x): x is string => !!x),
       ];
-      const audience =
-        audFriendIds.length || audGroupNames.length
-          ? { visibleTo: audFriendIds, visibleToGroups: audGroupNames, label: audLabels.join(", ") }
-          : undefined;
-      const activities = chosen.map((p) => ({
-        label: p.label,
-        durationMinutes: picker.callMins ?? p.durationMinutes,
-        visibleTo: p.visibleTo,
-        visibleToGroups: p.visibleToGroups,
-      }));
-      // Typed text: if you skipped presets it IS the activity; if you picked
-      // one it's a note refining it.
-      const typed = picker.note?.trim();
-      let note: string | undefined;
-      if (typed) {
-        if (activities.length === 0) activities.push({ label: typed, durationMinutes: picker.callMins, visibleTo: "all", visibleToGroups: undefined });
-        else note = typed;
+      const audience = restricted
+        ? { visibleTo: audFriendIds, visibleToGroups: audGroupNames, label: audLabels.join(", ") }
+        : undefined;
+      const confirmation = applyAvailability(member, w.mins, activities, w.fromPreset ? w.note : undefined, audience);
+      await answer();
+      await done(confirmation);
+      return;
+    }
+    // Audience toggles — re-render in place.
+    if (sub === "ae") {
+      w.audEveryone = true;
+      w.audFriends.clear();
+      w.audGroups.clear();
+    } else if (sub === "g") {
+      const i = parseInt(args[1] ?? "", 10);
+      if (w.groups[i]) {
+        w.audEveryone = false;
+        w.audGroups.has(i) ? w.audGroups.delete(i) : w.audGroups.add(i);
       }
-      const confirmation = applyAvailability(member, picker.mins, activities, note, audience);
-      await answer();
-      if (messageId !== undefined)
-        await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: confirmation });
-      else await dm(chatId, confirmation);
-      return;
-    }
-    if (args[0] === "add") {
-      await answer();
-      await promptFor(
-        chatId,
-        { kind: "preset-add", reopenUp: true },
-        'Send a call type to SAVE for next time — just a topic, e.g. "rubber-duck a bug". I\'ll tick it in the picker.',
-      );
-      return;
-    }
-    if (args[0] === "note") {
-      await answer();
-      await promptFor(
-        chatId,
-        { kind: "up-note" },
-        "Type your activity (if you skipped the presets) or a note to add to it. Your other choices stay put.",
-      );
-      return;
-    }
-    if (args[0] === "t") {
+    } else if (sub === "f") {
       const i = parseInt(args[1] ?? "", 10);
-      if (picker.presets[i]) picker.selected.has(i) ? picker.selected.delete(i) : picker.selected.add(i);
-    } else if (args[0] === "w") {
-      const m = parseInt(args[1] ?? "", 10);
-      if (PICKER_WINDOWS.includes(m)) picker.mins = m;
-    } else if (args[0] === "d") {
-      const m = parseInt(args[1] ?? "", 10);
-      if (PICKER_CALLS.includes(m)) picker.callMins = picker.callMins === m ? undefined : m;
-    } else if (args[0] === "af") {
-      const i = parseInt(args[1] ?? "", 10);
-      if (picker.friends[i]) picker.audFriends.has(i) ? picker.audFriends.delete(i) : picker.audFriends.add(i);
-    } else if (args[0] === "ag") {
-      const i = parseInt(args[1] ?? "", 10);
-      if (picker.groups[i]) picker.audGroups.has(i) ? picker.audGroups.delete(i) : picker.audGroups.add(i);
+      if (w.friends[i]) {
+        w.audEveryone = false;
+        w.audFriends.has(i) ? w.audFriends.delete(i) : w.audFriends.add(i);
+      }
     }
+    if (!w.audFriends.size && !w.audGroups.size) w.audEveryone = true; // nothing specific → everyone
     await answer();
     if (messageId !== undefined)
-      await tg("editMessageReplyMarkup", {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: pickerKeyboard(picker),
-      });
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: audienceKeyboard(w) });
     return;
   }
 
