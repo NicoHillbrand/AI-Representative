@@ -65,10 +65,23 @@ Signals auto-expire; nothing persists server-side except who's paired
 Local state (token, server, name, activities, settings) lives in
 `%APPDATA%/huddle/huddle-store.json`.
 
+## Packaging (Windows installer)
+
+`npm run dist` builds a per-user NSIS installer at `dist/Huddle Setup <version>.exe`
+(electron-builder). Autostart (launch-at-login) only takes effect in the packaged
+app — a dev `npm start` run can't register a working login item, so it's guarded
+on `app.isPackaged`. Fresh installs enable autostart by default until the user
+makes an explicit choice; toggle it any time under settings → **start at login**.
+
+Note: the build is unsigned, so SmartScreen shows a "unknown publisher" warning
+on first run (More info → Run anyway). If electron-builder's `winCodeSign` unpack
+fails with "Cannot create symbolic link", enable Windows Developer Mode or run the
+build once from an elevated terminal — the macOS symlinks it trips on aren't used
+for a Windows build.
+
 ## Not yet (Phase 2+)
 
-Packaging/installers (currently `npm start` only — autostart also only takes
-effect once packaged), extend-nudge, multiple groups. See spec §10.
+macOS/Linux installers, code signing, extend-nudge, multiple groups. See spec §10.
 
 ### Coordination-opportunity ideas (future)
 
