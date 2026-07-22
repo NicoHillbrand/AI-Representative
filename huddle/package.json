@@ -3,12 +3,37 @@
   "version": "0.1.0",
   "private": true,
   "description": "Desktop overlay for signaling 'I'm up for a spontaneous call in the next hour' to a closed group of friends.",
+  "author": "Nico Hillbrand",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "icons": "node scripts/gen-icons.mjs"
+    "icons": "node scripts/gen-icons.mjs",
+    "icon:app": "node scripts/gen-app-icon.mjs",
+    "dist": "npm run icon:app && electron-builder --win"
   },
   "devDependencies": {
-    "electron": "^37.0.0"
+    "electron": "^37.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.nicohillbrand.huddle",
+    "productName": "Huddle",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }
