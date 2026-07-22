@@ -166,10 +166,14 @@ ipcMain.handle("set-shortcut", (_e, accel) => {
 });
 ipcMain.handle("get-shortcut", () => storeGet().shortcut || DEFAULT_SHORTCUT);
 
-// Launch-at-login. Note: has no effect in dev (`npm start` runs electron.exe,
-// not an installed app) — meaningful once the app is packaged.
+// Launch-at-login. Only meaningful once the app is packaged: in dev
+// (`npm start`) process.execPath is electron.exe with no app path, so Windows
+// would register a bare Electron that boots to the default welcome screen.
+// Guard every registration on app.isPackaged so dev runs never touch the
+// registry Run key.
 ipcMain.handle("get-autostart", () => app.getLoginItemSettings().openAtLogin);
 ipcMain.handle("set-autostart", (_e, on) => {
+  if (!app.isPackaged) return false;
   app.setLoginItemSettings({ openAtLogin: !!on });
   storeSet({ autostartChosen: true });
   return app.getLoginItemSettings().openAtLogin;
@@ -177,6 +181,7 @@ ipcMain.handle("set-autostart", (_e, on) => {
 // On by default: enable launch-at-login the first time we run, until the user
 // makes an explicit choice (which then sticks, even if that choice is "off").
 function initAutostart() {
+  if (!app.isPackaged) return;
   if (storeGet().autostartChosen) return;
   app.setLoginItemSettings({ openAtLogin: true });
   storeSet({ autostartChosen: true });
