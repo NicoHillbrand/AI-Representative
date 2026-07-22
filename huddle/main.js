@@ -175,16 +175,17 @@ ipcMain.handle("get-autostart", () => app.getLoginItemSettings().openAtLogin);
 ipcMain.handle("set-autostart", (_e, on) => {
   if (!app.isPackaged) return false;
   app.setLoginItemSettings({ openAtLogin: !!on });
-  storeSet({ autostartChosen: true });
+  storeSet({ autostart: !!on });
   return app.getLoginItemSettings().openAtLogin;
 });
-// On by default: enable launch-at-login the first time we run, until the user
-// makes an explicit choice (which then sticks, even if that choice is "off").
+// On by default: enable launch-at-login on the first packaged run. Only an
+// explicit user opt-out (the settings toggle, which writes autostart:false)
+// suppresses it — a fresh store (autostart undefined) gets it turned on.
 function initAutostart() {
   if (!app.isPackaged) return;
-  if (storeGet().autostartChosen) return;
+  if (storeGet().autostart !== undefined) return; // respect an explicit choice
   app.setLoginItemSettings({ openAtLogin: true });
-  storeSet({ autostartChosen: true });
+  storeSet({ autostart: true });
 }
 // Renderer reports our own availability so the tray dot reflects it.
 ipcMain.on("tray-state", (_e, { available, tooltip }) => {

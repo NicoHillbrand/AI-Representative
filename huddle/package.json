@@ -18,6 +18,7 @@
   "build": {
     "appId": "com.nicohillbrand.huddle",
     "productName": "Huddle",
+    "artifactName": "Huddle-Setup-${version}.${ext}",
     "files": [
       "main.js",
       "preload.js",

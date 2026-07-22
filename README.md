@@ -90,6 +90,13 @@ To run it: `cd huddle && npm install && npm start`, then enter the server URL
 and the friend code of whoever invited you. Full details in
 [huddle/README.md](huddle/README.md).
 
+**Desktop installer (Windows):** `cd huddle && npm run dist` builds a per-user
+installer at `huddle/dist/Huddle-Setup-<version>.exe` (electron-builder). The
+installed app adds Start-menu/desktop shortcuts and starts with Windows by
+default. Build artifacts live under `huddle/dist/` (gitignored) — share the
+`.exe` directly with friends. See [huddle/README.md](huddle/README.md#packaging-windows-installer)
+for signing/SmartScreen notes.
+
 ## Run your own (local)
 
 ```bash
@@ -199,5 +206,6 @@ Updating later: `sudo -u airep git pull && sudo systemctl restart ai-representat
 - **Hardening ideas**: rate-limit `/api/*`, add a global API key for the
   negotiation endpoints if you don't want them fully open, move sessions to a
   real store.
-- **Huddle phase 2**: packaged installers (electron-builder) so friends don't
-  need Node — autostart only takes effect once packaged.
+- **Huddle desktop app**: packaged with electron-builder (`cd huddle && npm run
+  dist`) so friends don't need Node; autostart is on by default in the installed
+  app. Next: code signing (unsigned builds trip SmartScreen), macOS/Linux targets.
