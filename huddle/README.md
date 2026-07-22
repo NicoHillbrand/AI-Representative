@@ -67,8 +67,8 @@ Local state (token, server, name, activities, settings) lives in
 
 ## Packaging (Windows installer)
 
-`npm run dist` builds a per-user NSIS installer at `dist/Huddle Setup <version>.exe`
-(electron-builder). Autostart (launch-at-login) only takes effect in the packaged
+`npm run dist` builds a per-user NSIS installer at `../release/Huddle-Setup-<version>.exe`
+(electron-builder) — a single double-click installer. Autostart (launch-at-login) only takes effect in the packaged
 app — a dev `npm start` run can't register a working login item, so it's guarded
 on `app.isPackaged`. Fresh installs enable autostart by default until the user
 makes an explicit choice; toggle it any time under settings → **start at login**.

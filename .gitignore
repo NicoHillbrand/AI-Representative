@@ -2,6 +2,8 @@ node_modules/
 .env
 .env.local
 dist/
+# Huddle desktop build output (installer + unpacked app) — never committed
+release/
 *.log
 # Huddle presence: paired members + device tokens
 data/

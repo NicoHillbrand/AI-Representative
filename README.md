@@ -91,11 +91,12 @@ and the friend code of whoever invited you. Full details in
 [huddle/README.md](huddle/README.md).
 
 **Desktop installer (Windows):** `cd huddle && npm run dist` builds a per-user
-installer at `huddle/dist/Huddle-Setup-<version>.exe` (electron-builder). The
-installed app adds Start-menu/desktop shortcuts and starts with Windows by
-default. Build artifacts live under `huddle/dist/` (gitignored) — share the
-`.exe` directly with friends. See [huddle/README.md](huddle/README.md#packaging-windows-installer)
-for signing/SmartScreen notes.
+installer at `release/Huddle-Setup-<version>.exe` (electron-builder) — a single
+double-click installer that adds Start-menu/desktop shortcuts and starts with
+Windows by default. The `release/` folder is gitignored (it's a build artifact);
+share the `.exe` directly with friends. See
+[huddle/README.md](huddle/README.md#packaging-windows-installer) for
+signing/SmartScreen notes.
 
 ## Run your own (local)
 
