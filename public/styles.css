@@ -145,6 +145,18 @@ button.btn.secondary { background: var(--panel-2); color: var(--text); border-co
 }
 .chip:hover { border-color: var(--accent); }
 
+/* Rendered document (strategy & values) */
+.doc h1 { font-size: clamp(1.7rem, 3vw, 2.4rem); letter-spacing: -0.02em; margin: 0.1em 0 0.4em; }
+.doc h2 { font-size: 1.4rem; margin-top: 1.9em; padding-top: 0.2em; }
+.doc h3 { font-size: 1.08rem; margin-top: 1.5em; color: var(--text); }
+.doc p { margin: 0.9em 0; }
+.doc ul, .doc ol { margin: 0.6em 0; padding-left: 1.4em; }
+.doc li { margin: 0.35em 0; }
+.doc li::marker { color: var(--muted); }
+.doc strong { color: var(--text); font-weight: 650; }
+.doc hr { border: none; border-top: 1px solid var(--border); margin: 2.2em 0; }
+.doc em { color: var(--muted); }
+
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 pre {
   background: var(--panel-2);

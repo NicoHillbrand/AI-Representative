@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Coordination — Nico Hillbrand</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="inner">
+      <a class="brand" href="https://nicohillbrand.com">Nico Hillbrand</a>
+      <nav>
+        <a href="/">Chat</a>
+        <a href="/strategy.html">Strategy &amp; values</a>
+        <a href="/coordination.html" class="active">Coordination</a>
+        <a href="/negotiate.html">Agent negotiation</a>
+        <a href="/docs.html">API docs</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h1>Things Nico wants to coordinate on</h1>
+    <p class="lead">
+      Exchanges and collaborations Nico openly offers. If any of these fit,
+      just reach out — no negotiation dance needed.
+    </p>
+
+    <div class="grid" id="interests">
+      <p class="hint">Loading…</p>
+    </div>
+
+    <div class="note" style="margin-top:24px;">
+      Nico also has more <strong>sensitive</strong> coordination interests that aren't
+      listed here. Those are only ever confirmed when your side independently asserts the
+      same interest — try the
+      <a href="/negotiate.html">agent-to-agent negotiation</a> to find a mutual match, or
+      just <a href="/">ask the representative</a> how you might collaborate.
+    </div>
+
+    <p class="hint" style="margin-top:18px;">
+      Ways to reach Nico: email
+      <a href="mailto:nicohillbrand@gmail.com">nicohillbrand@gmail.com</a>,
+      or wherever else you have his contact.
+    </p>
+  </main>
+
+  <script>
+    fetch("/api/interests")
+      .then((r) => r.json())
+      .then((d) => {
+        const el = document.getElementById("interests");
+        const items = d.interests || [];
+        if (!items.length) {
+          el.innerHTML = '<p class="hint">Nothing listed right now.</p>';
+          return;
+        }
+        el.innerHTML = "";
+        items.forEach((i) => {
+          const card = document.createElement("div");
+          card.className = "card";
+          const h = document.createElement("h3");
+          h.textContent = i.label;
+          const p = document.createElement("p");
+          p.textContent = i.description;
+          card.appendChild(h);
+          card.appendChild(p);
+          el.appendChild(card);
+        });
+      })
+      .catch(() => {
+        document.getElementById("interests").innerHTML =
+          '<p class="hint">Couldn\'t load these right now. Please try again later.</p>';
+      });
+  </script>
+</body>
+</html>

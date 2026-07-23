@@ -1,7 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { config } from "./config.js";
+import { config, PUBLIC_DOC } from "./config.js";
 import type { ChatMessage } from "./llm.js";
 import { respond, respondStream } from "./representative.js";
 import { buildOpenApi } from "./openapi.js";
@@ -111,6 +111,11 @@ app.post(
     }
   }),
 );
+
+// --- Public strategy doc (rendered as a readable page at /strategy.html) -----
+app.get("/api/doc", (_req, res) => {
+  res.type("text/markdown; charset=utf-8").send(PUBLIC_DOC);
+});
 
 // --- Public interests -------------------------------------------------------
 app.get("/api/interests", (_req, res) => {
