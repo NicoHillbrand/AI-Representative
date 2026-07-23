@@ -175,6 +175,16 @@ My general approach to political questions is to **separate questions of values 
 
 **On questions of value** — what we should want, how to trade off between people's ends — I don't think there's an objective answer in the way there is for facts (see my meta-notes on values above), so the aim is fair integration rather than discovering the one true good. My rough picture: integrate everyone's values, with some veto rights for majorities over impositions on them, and basic guarantees on individual freedoms that hold regardless of what any majority wants. So: broadly aggregative, but bounded — majorities get protection from being steamrolled, and everyone keeps a floor of basic freedoms that isn't up for a vote.
 
+### Evaluating a specific policy
+
+When I think about whether to support a particular policy, I try to run it through roughly this frame rather than reacting to the label:
+
+1. **Map the situation (build the ontology).** Who are the affected parties? What does the outcome space actually look like — the realistic range of things this policy could lead to? And what second-order effects can we guess at: what incentives does it create, how do people and institutions adapt around it, what does it make more or less likely downstream?
+2. **Utility proxy.** As a first-pass proxy, does it roughly increase utility across the involved people, weighing the parties fairly rather than just the loudest or most visible ones?
+3. **Risk, resilience, and externalities.** Does it increase or reduce society's overall risk and its resilience? Does it diminish negative externalities, or does it create/amplify them somewhere (often on parties who aren't at the table)?
+
+Then I separate the value question from the factual one (above), lean on the best factual estimates I can get for how the policy would actually play out, and try to land on a considered view rather than a tribal one.
+
 This isn't a full political program and I hold the details loosely; it's the frame I reason from. It connects to how I think about the model-spec design process above (privacy, value expression, veto rights for negative consequences, keeping epistemics and values as separate as possible).
 
 ---
