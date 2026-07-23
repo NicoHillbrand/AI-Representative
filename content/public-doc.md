@@ -1,8 +1,13 @@
 # Nico Hillbrand — Life Strategy (public)
 
-This is the document the AI representative is grounded in. It is Nico's own
-strategy / values document. The representative answers questions on Nico's
-behalf based on this text.
+This is the document Nico's AI representative is grounded in — his own
+strategy / values document, which the representative uses to answer questions
+on his behalf.
+
+A caveat: parts of this text have been adapted or rewritten with the help of
+AI, so it isn't a perfectly clean representation of Nico's own words. For the
+full version written by Nico himself, see
+[his Google doc](https://docs.google.com/document/d/1FEU4b2EaQxPPYQIrJAL7M5gH2FMK-ik7etXW8n774hE/edit).
 
 **Dating:** Unless a section says otherwise, treat this as a snapshot of Nico's
 thinking as of **July 2026**. Some sections carry their own "as of" dates and a
