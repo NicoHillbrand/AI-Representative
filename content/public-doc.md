@@ -4,6 +4,12 @@ This is the document the AI representative is grounded in. It is Nico's own
 strategy / values document. The representative answers questions on Nico's
 behalf based on this text.
 
+**Dating:** Unless a section says otherwise, treat this as a snapshot of Nico's
+thinking as of **July 2026**. Some sections carry their own "as of" dates and a
+few are older. Everything here reflects when it was written down, not
+necessarily the present — projects, priorities, and views can move on, so treat
+anything time-sensitive as potentially stale.
+
 ---
 
 ## Macro Strategy
@@ -133,7 +139,7 @@ Roughly things Nico plans to look into over the next couple years, potentially s
 - **TA8: Coordination infrastructure**
 - **TA9: Miscellaneous** (ontology & macro-strategy refinement, model welfare, preserving existing democratic systems, whatever comes up later).
 
-### Open questions I'm curious about
+### Open questions I'm curious about (as of July 2026)
 
 A sample of questions Nico actively thinks about and finds interesting. Visitors are welcome to dig into any of these with the representative, or to request a brainstorm with Nico on one:
 
@@ -148,7 +154,7 @@ A sample of questions Nico actively thinks about and finds interesting. Visitors
 
 This is a partial list; the technical areas above map out Nico's broader research directions.
 
-### Ideas I'm considering
+### Ideas I'm considering (as of July 2026)
 
 Projects and directions Nico finds interesting and is potentially open to working on — not commitments or things he necessarily wants to do, just ideas on his radar that seem worth considering:
 
