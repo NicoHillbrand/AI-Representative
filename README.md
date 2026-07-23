@@ -119,14 +119,23 @@ read only by him.
   them on with `FORWARD_SOURCES=hackernews` — empty means the scheduler stays
   idle.
 
-**Reading it** is gated by a single `OWNER_TOKEN` (blank = the whole retrieval
-side is disabled):
+**The owner API** is auth-scoped into two tokens, so a read-only consumer (like
+Nico's own agent) can be *used* to read but can't *change* anything if it leaks:
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET  | `/api/forwards` | The feed as JSON (`?limit`, `?since`, `?unread=1`, `?category`). Bearer `OWNER_TOKEN`. |
-| POST | `/api/forwards` | Push an item in directly (`{ title, summary?, detail?, contact?, url?, category?, externalId? }`) — for Nico's own agent to forward things to himself. Bearer `OWNER_TOKEN`. |
-| POST | `/api/forwards/read` | Mark items read (`{ ids?: string[] }`; omit for all). Bearer `OWNER_TOKEN`. |
+- **`OWNER_READ_TOKEN`** — list the feed, read the owner's Huddle roster. This is
+  what an agent gets.
+- **`OWNER_WRITE_TOKEN`** — also create forwards and mark them read (and it
+  satisfies read). `OWNER_TOKEN` is accepted as an alias. Writes are meant to go
+  through Telegram/the overlay, so this stays off the agent.
+
+Each endpoint 503s when no token for its scope is configured.
+
+| Method | Path | Scope | Purpose |
+|---|---|---|---|
+| GET  | `/api/forwards` | read | The feed as JSON (`?limit`, `?since`, `?unread=1`, `?category`). |
+| GET  | `/api/owner/roster` | read | The owner's Huddle roster (who's up for a call). Needs `OWNER_MEMBER_ID` set server-side; the caller never chooses the member. |
+| POST | `/api/forwards` | write | Push an item in directly (`{ title, summary?, detail?, contact?, url?, category?, externalId? }`). |
+| POST | `/api/forwards/read` | write | Mark items read (`{ ids?: string[] }`; omit for all). |
 
 Point an agent (e.g. Slay the List) at `GET /api/forwards` with the token and
 ask it to summarize, or open **`/forwards.html`** for a simple authed viewer.
@@ -134,12 +143,15 @@ These routes are deliberately kept out of the public OpenAPI spec, like the
 Huddle presence API. The feed persists to `data/forwards.json` (gitignored).
 
 **Connecting your own agent** — [`mcp/`](mcp/README.md) is a self-contained MCP
-server (its own package, so it never bloats the deployed server) exposing these
-as agent tools: `list_forwards`, `forward_to_self`, `mark_forwards_read`, and
-`who_is_up` (which reads the Huddle roster with a device token). Either set it up
-by hand ([mcp/README.md](mcp/README.md)) or just **point your own agent at the
-repo and tell it to follow [mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md)** — that file
-is written as executable steps an agent can run to wire itself up.
+server (its own package, so it never bloats the deployed server) exposing the
+owner API as agent tools. It's **read-only by default**: give it
+`OWNER_READ_TOKEN` and it can `list_forwards` and `who_is_up` (via
+`/api/owner/roster` — no device token, so it can't act as you on Huddle); the
+`forward_to_self` / `mark_forwards_read` tools only appear if you also give it a
+write token. Either set it up by hand ([mcp/README.md](mcp/README.md)) or just
+**point your own agent at the repo and tell it to follow
+[mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md)** — that file is written as executable
+steps an agent can run to wire itself up.
 
 ## Run your own (local)
 

@@ -11,6 +11,7 @@ import { processTurn, summarize } from "./negotiation/negotiate.js";
 import {
   pairWithCode,
   memberByToken,
+  memberById,
   setSignal,
   clearSignal,
   roster,
@@ -591,30 +592,36 @@ app.get("/api/presence/stream", (req, res) => {
   });
 });
 
-// --- Forwarding feed (owner-only; not in the public OpenAPI spec) ------------
+// --- Forwarding feed + owner API (owner-only; not in the public OpenAPI spec) -
 // A private inbox of things the representative or the scheduled poller decided
-// Nico should see. Gated by OWNER_TOKEN; when that env var is blank the whole
-// feed API is disabled. Accepts the token as a Bearer header or ?token= (so
-// the static viewer and a quick curl both work).
-function ownerAuthed(req: Request, res: Response): boolean {
-  const expected = config.ownerToken;
-  if (!expected) {
-    res.status(503).json({ error: "unavailable", message: "Forwarding feed is not enabled on this server." });
+// Nico should see, plus a read-only view of his own Huddle roster. Auth is
+// split into two scopes (see config): a "read" token that can only list, and a
+// "write" token that can also mutate. A request presenting the write token
+// also satisfies "read". Tokens ride as a Bearer header or ?token= (so the
+// static viewer and a quick curl both work).
+function ownerAuthed(req: Request, res: Response, scope: "read" | "write"): boolean {
+  // read scope is satisfied by EITHER token; write scope only by the write one.
+  const candidates = (scope === "write" ? [config.ownerWriteToken] : [config.ownerReadToken, config.ownerWriteToken]).filter(
+    Boolean,
+  );
+  if (!candidates.length) {
+    res.status(503).json({ error: "unavailable", message: "This owner API is not enabled on this server." });
     return false;
   }
-  const provided = bearer(req) ?? (typeof req.query.token === "string" ? req.query.token : "");
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  const ok = a.length === b.length && timingSafeEqual(a, b);
+  const provided = Buffer.from(bearer(req) ?? (typeof req.query.token === "string" ? req.query.token : ""));
+  const ok = candidates.some((t) => {
+    const b = Buffer.from(t);
+    return provided.length === b.length && timingSafeEqual(provided, b);
+  });
   if (!ok) {
-    res.status(401).json({ error: "unauthorized", message: "Missing or invalid owner token." });
+    res.status(401).json({ error: "unauthorized", message: "Missing or invalid owner token for this action." });
     return false;
   }
   return true;
 }
 
 app.get("/api/forwards", (req, res) => {
-  if (!ownerAuthed(req, res)) return;
+  if (!ownerAuthed(req, res, "read")) return;
   const limit = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
   const since = typeof req.query.since === "string" ? Number(req.query.since) : undefined;
   const items = listForwards({
@@ -629,7 +636,7 @@ app.get("/api/forwards", (req, res) => {
 // Push an item into the feed directly — for Nico's own agent (e.g. Slay the
 // List) to forward things to himself. Same owner-token gate as reading.
 app.post("/api/forwards", (req, res) => {
-  if (!ownerAuthed(req, res)) return;
+  if (!ownerAuthed(req, res, "write")) return;
   const b = req.body ?? {};
   if (typeof b.title !== "string" || !b.title.trim()) {
     res.status(400).json({ error: "bad_request", message: "Body must include a non-empty { title }." });
@@ -655,12 +662,30 @@ app.post("/api/forwards", (req, res) => {
 });
 
 app.post("/api/forwards/read", (req, res) => {
-  if (!ownerAuthed(req, res)) return;
+  if (!ownerAuthed(req, res, "write")) return;
   const ids = Array.isArray(req.body?.ids)
     ? req.body.ids.filter((v: unknown): v is string => typeof v === "string")
     : undefined;
   const marked = markRead(ids);
   res.json({ marked, unread: unreadCount() });
+});
+
+// Read-only view of the OWNER's Huddle roster (who's up for a call), so a
+// read-scoped consumer can answer "is anyone available?" WITHOUT holding a
+// full device token (which would also let it act as the owner). Which member's
+// roster is decided server-side by OWNER_MEMBER_ID, never by the caller.
+app.get("/api/owner/roster", (req, res) => {
+  if (!ownerAuthed(req, res, "read")) return;
+  if (!config.ownerMemberId) {
+    res.status(503).json({ error: "unavailable", message: "Set OWNER_MEMBER_ID to enable the owner roster." });
+    return;
+  }
+  const member = memberById(config.ownerMemberId);
+  if (!member) {
+    res.status(404).json({ error: "not_found", message: "OWNER_MEMBER_ID does not match a Huddle member." });
+    return;
+  }
+  res.json({ members: roster(member) });
 });
 
 // --- Docs -------------------------------------------------------------------

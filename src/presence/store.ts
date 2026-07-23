@@ -258,6 +258,12 @@ export function memberByToken(token: string | undefined): Member | undefined {
   return token ? byToken.get(token) : undefined;
 }
 
+/** Look up a member by id — used by the owner-scoped, read-only roster route
+ * (server reads OWNER_MEMBER_ID; callers never choose the member). */
+export function memberById(id: string): Member | undefined {
+  return members.get(id);
+}
+
 // --- friend graph ---------------------------------------------------------------
 function befriend(a: Member, b: Member): void {
   if (a.id === b.id || a.friends.has(b.id)) return;

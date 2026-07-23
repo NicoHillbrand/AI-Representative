@@ -43,11 +43,21 @@ export const config = {
   // notifications + availability-by-message, and representative chat for
   // anyone who messages the bot. Empty = bridge disabled.
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
-  // --- Forwarding feed (src/forwarding/) --------------------------------------
-  // A private feed of things the representative (or a scheduled poller) decides
-  // Nico should see. Read only with this bearer token — the /api/forwards
-  // routes and the /forwards.html viewer are disabled entirely when it's blank.
-  ownerToken: process.env.OWNER_TOKEN ?? "",
+  // --- Forwarding feed + owner API (src/forwarding/) --------------------------
+  // Owner API auth, split into read and write scopes so a read-only consumer
+  // (e.g. Nico's own agent over MCP) can't mutate state if it's compromised —
+  // it can be *used* to read, but not to *change* anything.
+  //   - write token: full authority (create forwards, mark read). OWNER_TOKEN
+  //     is honored as the write token for backward compatibility.
+  //   - read token: list the feed + read the owner's Huddle roster only.
+  // A request that presents the write token is also allowed to read. Each
+  // endpoint 503s when no token satisfying its scope is configured.
+  ownerWriteToken: process.env.OWNER_WRITE_TOKEN ?? process.env.OWNER_TOKEN ?? "",
+  ownerReadToken: process.env.OWNER_READ_TOKEN ?? "",
+  // The owner's Huddle member id, so the read-only /api/owner/roster knows
+  // whose availability to return. Find it in data/presence-members.json (or via
+  // GET /api/presence/me with a device token). Blank disables that endpoint.
+  ownerMemberId: process.env.OWNER_MEMBER_ID ?? "",
   // How often the scheduled poller runs, in hours (default twice a day).
   forwardPollHours: Number(process.env.FORWARD_POLL_HOURS ?? 12),
   // Which external sources the poller pulls from, comma-separated (keys from
