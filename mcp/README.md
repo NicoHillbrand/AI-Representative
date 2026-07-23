@@ -16,6 +16,12 @@ It talks to the server **over HTTP**, so it runs anywhere — your laptop, where
 your agent lives — and just needs the base URL and your tokens as env vars. It
 never holds the feed itself; the server is the source of truth.
 
+> **Letting an agent set this up for you:** point your agent at this repo and
+> tell it to follow [`AGENT_SETUP.md`](AGENT_SETUP.md) — it's the same steps
+> below, written as instructions an agent can execute (install, ask you for the
+> tokens, write the config into its own project). The rest of this file is the
+> manual version.
+
 ## 1. Install
 
 ```bash

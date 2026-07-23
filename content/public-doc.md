@@ -243,7 +243,7 @@ Key uncertainties in planning: AI timelines (especially when/how a new more effi
 
 ## Exchanges Nico is interested in (public)
 
-_Last updated: 02.06.2026_
+_Last updated: 23.07.2026_
 
 Nico is interested in initiating these kinds of exchanges:
 
@@ -252,5 +252,6 @@ Nico is interested in initiating these kinds of exchanges:
 - **Pair-programming todo-list exchange** — 30 min each being a thinking double while going through each other's todo lists.
 - **Compare personal agency scaffold setups** — todo system, CRM / relationship-tracking system, blockers & media channels, visual representations for concepts and routine flows, note-taking & memory system.
 - **Brainstorm session** — Nico is open to brainstorming on his current projects, research directions, or any of the open questions above. If a visitor wants one, the representative can take the topic and pass the request along to him.
+- **Game out AI futures together** — Nico is interested in running sessions where you jointly game out intelligence-explosion scenarios and utopias and try to write detailed, concrete versions of them. He's especially interested right now in writing a scenario where a brain-like AGI runs efficiently enough on a few consumer GPUs to be dangerous, and working through how the world could navigate that into a good outcome.
 
 Ways to reach Nico: write to him wherever you have his contact, email **nicohillbrand@gmail.com**, or book a meeting in his calendar.

@@ -136,9 +136,10 @@ Huddle presence API. The feed persists to `data/forwards.json` (gitignored).
 **Connecting your own agent** — [`mcp/`](mcp/README.md) is a self-contained MCP
 server (its own package, so it never bloats the deployed server) exposing these
 as agent tools: `list_forwards`, `forward_to_self`, `mark_forwards_read`, and
-`who_is_up` (which reads the Huddle roster with a device token). Copy the folder
-or point your agent at it — see [mcp/README.md](mcp/README.md) for the config
-block and how to get the tokens.
+`who_is_up` (which reads the Huddle roster with a device token). Either set it up
+by hand ([mcp/README.md](mcp/README.md)) or just **point your own agent at the
+repo and tell it to follow [mcp/AGENT_SETUP.md](mcp/AGENT_SETUP.md)** — that file
+is written as executable steps an agent can run to wire itself up.
 
 ## Run your own (local)
 
