@@ -98,6 +98,40 @@ share the `.exe` directly with friends. See
 [huddle/README.md](huddle/README.md#packaging-windows-installer) for
 signing/SmartScreen notes.
 
+## Forwarding feed (`src/forwarding/`)
+
+A private inbox of things worth Nico's attention, fed from two directions and
+read only by him.
+
+- **From chats** — the representative now *offers to forward* messages instead
+  of just handing out an email. After each turn a **loose, intuition-based
+  classifier** (on the cheap classifier model) judges whether the visitor was
+  trying to reach Nico and whether it's worth passing on — a real coordination
+  opportunity or a sincere person reaching out, versus spam or an idle question
+  already answered. Worthy items land in the feed; either way the classifier's
+  verdict is shown back to the visitor (a chip in the web UI, a follow-up line
+  on Telegram). The chat path sees only the **public** interest list, so the
+  reason it shows a visitor can't leak anything private.
+- **From external APIs** — a scheduler (`FORWARD_POLL_HOURS`, default 12 =
+  twice a day) walks each enabled source, dedupes against what it's already
+  filed, and runs new items past the same classifier. Sources are pluggable
+  (`src/forwarding/sources/`); **Hacker News** ships as a working example. Turn
+  them on with `FORWARD_SOURCES=hackernews` — empty means the scheduler stays
+  idle.
+
+**Reading it** is gated by a single `OWNER_TOKEN` (blank = the whole retrieval
+side is disabled):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/api/forwards` | The feed as JSON (`?limit`, `?since`, `?unread=1`, `?category`). Bearer `OWNER_TOKEN`. |
+| POST | `/api/forwards/read` | Mark items read (`{ ids?: string[] }`; omit for all). Bearer `OWNER_TOKEN`. |
+
+Point an agent (e.g. Slay the List) at `GET /api/forwards` with the token and
+ask it to summarize, or open **`/forwards.html`** for a simple authed viewer.
+These routes are deliberately kept out of the public OpenAPI spec, like the
+Huddle presence API. The feed persists to `data/forwards.json` (gitignored).
+
 ## Run your own (local)
 
 ```bash

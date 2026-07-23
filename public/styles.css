@@ -104,6 +104,8 @@ p.lead { color: var(--muted); font-size: 1.05rem; }
 .msg.assistant { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .msg.system { align-self: center; background: transparent; color: var(--muted); font-size: 0.85rem; font-style: italic; }
 .msg.match { align-self: center; background: color-mix(in srgb, var(--accent-2) 18%, var(--panel)); border: 1px solid var(--accent-2); color: var(--text); font-size: 0.9rem; }
+.forward-note { align-self: flex-start; max-width: 88%; font-size: 0.82rem; color: var(--muted); font-style: italic; padding: 2px 6px; }
+.forward-note.forwarded { color: var(--accent-2); font-style: normal; }
 
 .composer { display: flex; gap: 10px; padding: 12px; border-top: 1px solid var(--border); background: var(--panel); }
 .composer textarea {

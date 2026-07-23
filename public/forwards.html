@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Forwarded to Nico</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .feed { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+    .fwd { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
+    .fwd.unread { border-color: var(--accent); }
+    .fwd h3 { margin: 0 0 4px; font-size: 1rem; }
+    .fwd .meta { color: var(--muted); font-size: 0.78rem; display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+    .fwd .meta .tag { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+    .fwd p { margin: 6px 0 0; font-size: 0.92rem; }
+    .fwd details { margin-top: 6px; font-size: 0.85rem; color: var(--muted); }
+    .fwd details pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
+    .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .token-row { display: flex; gap: 8px; }
+    .token-row input { flex: 1; }
+    input[type=password], input[type=text] { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    .status { color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header class="site">
+    <div class="inner">
+      <a class="brand" href="https://nicohillbrand.com">Nico Hillbrand</a>
+      <nav><a href="/">Chat</a></nav>
+    </div>
+  </header>
+
+  <main>
+    <h1>Forwarded to Nico</h1>
+    <p class="lead">A private feed of things the representative and the scheduled poller flagged for you.</p>
+
+    <div class="token-row" id="auth">
+      <input type="password" id="token" placeholder="Owner token" autocomplete="off" />
+      <button class="btn" id="save">Unlock</button>
+    </div>
+
+    <div class="bar" id="controls" hidden>
+      <label><input type="checkbox" id="unreadOnly" /> Unread only</label>
+      <button class="btn secondary" id="refresh">Refresh</button>
+      <button class="btn secondary" id="markAll">Mark all read</button>
+      <button class="btn secondary" id="logout">Forget token</button>
+      <span class="status" id="status"></span>
+    </div>
+
+    <div class="feed" id="feed"></div>
+  </main>
+
+  <script>
+    const KEY = "owner_token";
+    const $ = (id) => document.getElementById(id);
+    let token = localStorage.getItem(KEY) || "";
+
+    function esc(s) {
+      return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+    function fmtTime(ms) {
+      try { return new Date(ms).toLocaleString(); } catch { return ""; }
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(opts.headers || {}) },
+      });
+      if (res.status === 401) throw new Error("Invalid owner token.");
+      if (res.status === 503) throw new Error("Feed is not enabled on this server (set OWNER_TOKEN).");
+      if (!res.ok) throw new Error("Request failed (" + res.status + ").");
+      return res.json();
+    }
+
+    function render(items) {
+      const feed = $("feed");
+      if (!items.length) { feed.innerHTML = '<p class="status">Nothing here yet.</p>'; return; }
+      feed.innerHTML = items.map((f) => `
+        <div class="fwd ${f.read ? "" : "unread"}">
+          <div class="meta">
+            <span class="tag">${esc(f.source)}</span>
+            ${f.category ? `<span class="tag">${esc(f.category)}</span>` : ""}
+            <span>${esc(fmtTime(f.createdAt))}</span>
+            ${f.read ? "" : "<span>• unread</span>"}
+          </div>
+          <h3>${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a>` : esc(f.title)}</h3>
+          <p>${esc(f.summary)}</p>
+          ${f.contact ? `<p><strong>Contact:</strong> ${esc(f.contact)}</p>` : ""}
+          ${f.detail ? `<details><summary>Context</summary><pre>${esc(f.detail)}</pre></details>` : ""}
+        </div>`).join("");
+    }
+
+    async function load() {
+      const unread = $("unreadOnly").checked ? "&unread=1" : "";
+      $("status").textContent = "Loading…";
+      try {
+        const { items, unread: n } = await api(`/api/forwards?limit=200${unread}`);
+        render(items);
+        $("status").textContent = `${items.length} shown · ${n} unread`;
+      } catch (e) {
+        $("status").textContent = e.message;
+        if (/token/i.test(e.message)) showAuth();
+      }
+    }
+
+    function showFeed() {
+      $("auth").hidden = true;
+      $("controls").hidden = false;
+      load();
+    }
+    function showAuth() {
+      $("auth").hidden = false;
+      $("controls").hidden = true;
+      $("feed").innerHTML = "";
+    }
+
+    $("save").onclick = () => {
+      token = $("token").value.trim();
+      if (!token) return;
+      localStorage.setItem(KEY, token);
+      showFeed();
+    };
+    $("logout").onclick = () => { localStorage.removeItem(KEY); token = ""; showAuth(); };
+    $("refresh").onclick = load;
+    $("unreadOnly").onchange = load;
+    $("markAll").onclick = async () => {
+      try { await api("/api/forwards/read", { method: "POST", body: "{}" }); load(); }
+      catch (e) { $("status").textContent = e.message; }
+    };
+    $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+
+    if (token) showFeed(); else showAuth();
+  </script>
+</body>
+</html>

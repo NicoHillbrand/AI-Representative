@@ -43,6 +43,19 @@ export const config = {
   // notifications + availability-by-message, and representative chat for
   // anyone who messages the bot. Empty = bridge disabled.
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+  // --- Forwarding feed (src/forwarding/) --------------------------------------
+  // A private feed of things the representative (or a scheduled poller) decides
+  // Nico should see. Read only with this bearer token — the /api/forwards
+  // routes and the /forwards.html viewer are disabled entirely when it's blank.
+  ownerToken: process.env.OWNER_TOKEN ?? "",
+  // How often the scheduled poller runs, in hours (default twice a day).
+  forwardPollHours: Number(process.env.FORWARD_POLL_HOURS ?? 12),
+  // Which external sources the poller pulls from, comma-separated (keys from
+  // src/forwarding/sources/). Empty = the scheduler stays idle (nothing polls).
+  forwardSources: (process.env.FORWARD_SOURCES ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
 };
 
 /** The whole public strategy doc, loaded once at startup and stuffed into the system prompt. */

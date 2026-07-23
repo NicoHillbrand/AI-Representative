@@ -37,7 +37,10 @@ import {
   type SignalAudience,
 } from "./presence/store.js";
 import { startTelegramBridge, telegramEnabled, telegramBotUsername } from "./presence/telegram.js";
-import { randomBytes } from "node:crypto";
+import { captureChatForward } from "./forwarding/capture.js";
+import { listForwards, markRead, unreadCount } from "./forwarding/store.js";
+import { startForwardScheduler } from "./forwarding/scheduler.js";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(here, "..", "public");
@@ -104,10 +107,17 @@ app.post(
       return;
     }
     if (stream) {
-      await respondStream(messages, res);
+      // After the reply streams, the loose forwarding classifier looks at the
+      // turn; if the visitor was trying to reach Nico, its verdict is sent as a
+      // `forward` event so the UI can show whether it was passed on.
+      await respondStream(messages, res, async (full, send) => {
+        const verdict = await captureChatForward(messages, full, "chat");
+        if (verdict) send("forward", verdict);
+      });
     } else {
       const reply = await respond(messages);
-      res.json({ reply });
+      const forward = await captureChatForward(messages, reply, "chat").catch(() => null);
+      res.json({ reply, ...(forward ? { forward } : {}) });
     }
   }),
 );
@@ -581,6 +591,50 @@ app.get("/api/presence/stream", (req, res) => {
   });
 });
 
+// --- Forwarding feed (owner-only; not in the public OpenAPI spec) ------------
+// A private inbox of things the representative or the scheduled poller decided
+// Nico should see. Gated by OWNER_TOKEN; when that env var is blank the whole
+// feed API is disabled. Accepts the token as a Bearer header or ?token= (so
+// the static viewer and a quick curl both work).
+function ownerAuthed(req: Request, res: Response): boolean {
+  const expected = config.ownerToken;
+  if (!expected) {
+    res.status(503).json({ error: "unavailable", message: "Forwarding feed is not enabled on this server." });
+    return false;
+  }
+  const provided = bearer(req) ?? (typeof req.query.token === "string" ? req.query.token : "");
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  const ok = a.length === b.length && timingSafeEqual(a, b);
+  if (!ok) {
+    res.status(401).json({ error: "unauthorized", message: "Missing or invalid owner token." });
+    return false;
+  }
+  return true;
+}
+
+app.get("/api/forwards", (req, res) => {
+  if (!ownerAuthed(req, res)) return;
+  const limit = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
+  const since = typeof req.query.since === "string" ? Number(req.query.since) : undefined;
+  const items = listForwards({
+    limit: Number.isFinite(limit) ? limit : undefined,
+    since: Number.isFinite(since) ? since : undefined,
+    unreadOnly: req.query.unread === "true" || req.query.unread === "1",
+    category: typeof req.query.category === "string" ? req.query.category : undefined,
+  });
+  res.json({ items, unread: unreadCount() });
+});
+
+app.post("/api/forwards/read", (req, res) => {
+  if (!ownerAuthed(req, res)) return;
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids.filter((v: unknown): v is string => typeof v === "string")
+    : undefined;
+  const marked = markRead(ids);
+  res.json({ marked, unread: unreadCount() });
+});
+
 // --- Docs -------------------------------------------------------------------
 app.get("/openapi.json", (_req, res) => res.json(buildOpenApi()));
 
@@ -596,3 +650,7 @@ app.listen(config.port, () => {
 
 // Fire-and-forget: long-polls Telegram if TELEGRAM_BOT_TOKEN is set.
 void startTelegramBridge();
+
+// Fire-and-forget: polls external sources into the forwarding feed if any are
+// enabled via FORWARD_SOURCES (otherwise stays idle).
+startForwardScheduler();

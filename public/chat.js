@@ -71,6 +71,14 @@ async function send() {
         } else if (eventType === "done") {
           acc = data.text || acc;
           assistantEl.textContent = acc;
+        } else if (eventType === "forward") {
+          // The representative flagged (or declined to flag) something for Nico.
+          const note = document.createElement("div");
+          note.className = `forward-note ${data.status}`;
+          note.textContent =
+            (data.status === "forwarded" ? "✓ " : "") + (data.reason || "");
+          messagesEl.appendChild(note);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (eventType === "error") {
           assistantEl.textContent = `Error: ${data.message}`;
         }

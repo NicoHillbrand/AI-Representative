@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
 import { type ChatMessage } from "../llm.js";
 import { respond } from "../representative.js";
+import { captureChatForward } from "../forwarding/capture.js";
 import { createSession, type Session } from "../negotiation/store.js";
 import { processTurn, summarize } from "../negotiation/negotiate.js";
 import {
@@ -737,6 +738,10 @@ async function chatWithRepresentative(chatId: number, text: string): Promise<voi
     history.push({ role: "assistant", content: reply });
     chatHistories.set(chatId, trimHistory(history));
     await dm(chatId, reply);
+    // Same loose forwarding pass as the web chat: if the person was trying to
+    // reach Nico, tell them what the filter decided.
+    const verdict = await captureChatForward(history, reply, "telegram").catch(() => null);
+    if (verdict) await dm(chatId, verdict.status === "forwarded" ? `✅ ${verdict.reason}` : `ℹ️ ${verdict.reason}`);
   } catch (err) {
     console.error("telegram chat failed", err);
     await dm(chatId, "The representative didn't answer — try again in a moment.");
