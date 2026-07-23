@@ -5,6 +5,103 @@ const sendBtn = document.getElementById("send");
 /** @type {{role:'user'|'assistant', content:string}[]} */
 const history = [];
 
+// The representative replies in GitHub-flavored markdown. Render a safe subset
+// (headings, bold/italic, code, lists, links) to HTML so it doesn't show raw
+// `*`/`-`. We escape first, so nothing the model emits can inject markup.
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderInline(s) {
+  // `s` is already HTML-escaped; markdown punctuation (* _ ` [ ]) survives that.
+  return s
+    .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
+    .replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      (_, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`,
+    )
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\s)([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_(?!\s)([^_]+)_/g, "$1<em>$2</em>");
+}
+
+function renderMarkdown(src) {
+  const lines = escapeHtml(src).split("\n");
+  const out = [];
+  let para = [];
+  let listType = null;
+  let listItems = [];
+  let inCode = false;
+  let codeBuf = [];
+
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${renderInline(para.join("<br>"))}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (listType) {
+      out.push(
+        `<${listType}>${listItems
+          .map((li) => `<li>${renderInline(li)}</li>`)
+          .join("")}</${listType}>`,
+      );
+    }
+    listItems = [];
+    listType = null;
+  };
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      if (inCode) {
+        out.push(`<pre><code>${codeBuf.join("\n")}</code></pre>`);
+        codeBuf = [];
+        inCode = false;
+      } else {
+        flushPara();
+        flushList();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuf.push(line);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+
+    if (heading) {
+      flushPara();
+      flushList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+    } else if (ul) {
+      flushPara();
+      if (listType !== "ul") flushList();
+      listType = "ul";
+      listItems.push(ul[1]);
+    } else if (ol) {
+      flushPara();
+      if (listType !== "ol") flushList();
+      listType = "ol";
+      listItems.push(ol[1]);
+    } else if (line.trim() === "") {
+      flushPara();
+      flushList();
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  if (inCode) out.push(`<pre><code>${codeBuf.join("\n")}</code></pre>`);
+  flushPara();
+  flushList();
+  return out.join("");
+}
+
 function addMessage(role, content) {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
@@ -66,11 +163,11 @@ async function send() {
         const data = JSON.parse(dataLine);
         if (eventType === "delta") {
           acc += data.text;
-          assistantEl.textContent = acc;
+          assistantEl.innerHTML = renderMarkdown(acc);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (eventType === "done") {
           acc = data.text || acc;
-          assistantEl.textContent = acc;
+          assistantEl.innerHTML = renderMarkdown(acc);
         } else if (eventType === "forward") {
           // The representative flagged (or declined to flag) something for Nico.
           const note = document.createElement("div");
