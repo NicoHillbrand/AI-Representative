@@ -167,6 +167,18 @@ Another angle: Nico wants to be like the person he wants to be, and to increase 
 
 ---
 
+## Politics
+
+My general approach to political questions is to **separate questions of values from questions of fact** and handle each with the method suited to it. Most disagreements tangle the two together, and pulling them apart is most of the work.
+
+**On questions of fact** — what a policy would actually do, what the world is like, what follows from what — I want to be rigorous and scientific. Where possible, defer to good aggregations of expert opinion rather than vibes or motivated reasoning, and genuinely try to get the answer right. Facts are the kind of thing there's a right answer to, and the goal is to track it.
+
+**On questions of value** — what we should want, how to trade off between people's ends — I don't think there's an objective answer in the way there is for facts (see my meta-notes on values above), so the aim is fair integration rather than discovering the one true good. My rough picture: integrate everyone's values, with some veto rights for majorities over impositions on them, and basic guarantees on individual freedoms that hold regardless of what any majority wants. So: broadly aggregative, but bounded — majorities get protection from being steamrolled, and everyone keeps a floor of basic freedoms that isn't up for a vote.
+
+This isn't a full political program and I hold the details loosely; it's the frame I reason from. It connects to how I think about the model-spec design process above (privacy, value expression, veto rights for negative consequences, keeping epistemics and values as separate as possible).
+
+---
+
 ## Assumptions & uncertainties
 
 Implicit assumptions: AI will be a big deal; there are large amounts of 'free energy'.
