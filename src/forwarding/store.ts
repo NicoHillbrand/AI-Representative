@@ -12,8 +12,9 @@ import { paths } from "../config.js";
  * store itself never filters by viewer because there is only one viewer (Nico).
  */
 
-/** Where a forward came from. `scheduler:<sourceKey>` for polled items. */
-export type ForwardSource = "chat" | "telegram" | "negotiation" | `scheduler:${string}`;
+/** Where a forward came from. `scheduler:<sourceKey>` for polled items;
+ * `owner` for items Nico (or his own agent) pushed in directly. */
+export type ForwardSource = "chat" | "telegram" | "negotiation" | "owner" | `scheduler:${string}`;
 
 export interface Forward {
   id: string;

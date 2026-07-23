@@ -125,12 +125,20 @@ side is disabled):
 | Method | Path | Purpose |
 |---|---|---|
 | GET  | `/api/forwards` | The feed as JSON (`?limit`, `?since`, `?unread=1`, `?category`). Bearer `OWNER_TOKEN`. |
+| POST | `/api/forwards` | Push an item in directly (`{ title, summary?, detail?, contact?, url?, category?, externalId? }`) — for Nico's own agent to forward things to himself. Bearer `OWNER_TOKEN`. |
 | POST | `/api/forwards/read` | Mark items read (`{ ids?: string[] }`; omit for all). Bearer `OWNER_TOKEN`. |
 
 Point an agent (e.g. Slay the List) at `GET /api/forwards` with the token and
 ask it to summarize, or open **`/forwards.html`** for a simple authed viewer.
 These routes are deliberately kept out of the public OpenAPI spec, like the
 Huddle presence API. The feed persists to `data/forwards.json` (gitignored).
+
+**Connecting your own agent** — [`mcp/`](mcp/README.md) is a self-contained MCP
+server (its own package, so it never bloats the deployed server) exposing these
+as agent tools: `list_forwards`, `forward_to_self`, `mark_forwards_read`, and
+`who_is_up` (which reads the Huddle roster with a device token). Copy the folder
+or point your agent at it — see [mcp/README.md](mcp/README.md) for the config
+block and how to get the tokens.
 
 ## Run your own (local)
 

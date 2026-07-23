@@ -1,0 +1,17 @@
+{
+  "name": "ai-representative-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing the AI Representative's private owner API (forwarding feed + Huddle roster) as agent tools.",
+  "bin": {
+    "ai-representative-mcp": "server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  }
+}

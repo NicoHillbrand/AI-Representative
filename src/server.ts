@@ -38,7 +38,7 @@ import {
 } from "./presence/store.js";
 import { startTelegramBridge, telegramEnabled, telegramBotUsername } from "./presence/telegram.js";
 import { captureChatForward } from "./forwarding/capture.js";
-import { listForwards, markRead, unreadCount } from "./forwarding/store.js";
+import { addForward, listForwards, markRead, unreadCount } from "./forwarding/store.js";
 import { startForwardScheduler } from "./forwarding/scheduler.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
@@ -624,6 +624,34 @@ app.get("/api/forwards", (req, res) => {
     category: typeof req.query.category === "string" ? req.query.category : undefined,
   });
   res.json({ items, unread: unreadCount() });
+});
+
+// Push an item into the feed directly — for Nico's own agent (e.g. Slay the
+// List) to forward things to himself. Same owner-token gate as reading.
+app.post("/api/forwards", (req, res) => {
+  if (!ownerAuthed(req, res)) return;
+  const b = req.body ?? {};
+  if (typeof b.title !== "string" || !b.title.trim()) {
+    res.status(400).json({ error: "bad_request", message: "Body must include a non-empty { title }." });
+    return;
+  }
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+  const forward = addForward({
+    source: "owner",
+    title: b.title,
+    summary: str(b.summary) ?? b.title,
+    category: str(b.category),
+    detail: str(b.detail),
+    contact: str(b.contact),
+    url: str(b.url),
+    externalId: str(b.externalId),
+  });
+  // addForward returns undefined only when an externalId dupes an existing item.
+  if (!forward) {
+    res.status(200).json({ deduped: true });
+    return;
+  }
+  res.status(201).json({ forward });
 });
 
 app.post("/api/forwards/read", (req, res) => {
