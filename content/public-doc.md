@@ -95,6 +95,8 @@ Even if alignment and extreme power concentration are solved and we have a globa
 
 ## Meso Strategy
 
+_Current main projects, as of July 2026: **AI Safety Aachen**, the **EU AI Safety Forum**, and building up a **coordination community** — detailed in the subsections below._
+
 ### AI Safety Aachen
 
 The aim is to scout for people that are intellectually curious and impact-oriented and then support them in building up skills, models and resources useful for advancing important macro projects. A core strategy for doing so (and generating additional outputs) is projects:
@@ -105,9 +107,17 @@ The aim is to scout for people that are intellectually curious and impact-orient
 
 The number of impact-oriented individuals seems like a generally highly valuable resource to help civilisation build up.
 
-### Coordination Forum
+### EU AI Safety Forum
 
-The main thing is to increase safety / civilisational-sanity capacity through impact-oriented individuals. The starting strategy will be monthly coworking calls where people brainstorm ways they can coordinate with others and broader society.
+A 30-person, invite-only event bringing EU policymakers together around AI safety. It's one of Nico's main current projects and the flagship ops project coming out of AI Safety Aachen.
+
+### Coordination (community building)
+
+The main thing is to increase safety / civilisational-sanity capacity through impact-oriented individuals. Nico is building up a coordination community, currently along three lines:
+
+- **An intro course on coordination.**
+- **A newsletter on coordination.**
+- **Regular calls on putting coordination ideas into practice** — where people brainstorm concrete ways to coordinate with others and broader society. Notes and details live in [this Google Doc](https://docs.google.com/document/d/1d9SVG2A-IIT_ojW2PsQZfLq0Ed8lhY0xGC6BjH1OSUo/edit).
 
 ### Research explorations
 
@@ -122,6 +132,21 @@ Roughly things Nico plans to look into over the next couple years, potentially s
 - **TA7: International arms control** — TA7.1 Verification infrastructure.
 - **TA8: Coordination infrastructure**
 - **TA9: Miscellaneous** (ontology & macro-strategy refinement, model welfare, preserving existing democratic systems, whatever comes up later).
+
+### Open questions I'm curious about
+
+A sample of questions Nico actively thinks about and finds interesting. Visitors are welcome to dig into any of these with the representative, or to request a brainstorm with Nico on one:
+
+- When will AI that can automate scientific R&D be developed?
+- How can we make sure AI is developed safely?
+- How can you define abstraction formally?
+- What are goals, values, impulses, and heuristics, computationally?
+- What characterizes good philosophical reasoning, and how can we make progress on metaphilosophy?
+- What is consciousness, and which beings are conscious?
+- How can we effectively communicate about AI risk?
+- Can we reverse-engineer human social instincts and use that to build aligned AIs — how does "niceness" get learned in humans at a neurological / computational level?
+
+This is a partial list; the technical areas above map out Nico's broader research directions.
 
 ### CS Masters
 
@@ -207,5 +232,6 @@ Nico is interested in initiating these kinds of exchanges:
 - **Test your software exchange** — you test Coordination Forum or SlayTheList and Nico tests some of your software.
 - **Pair-programming todo-list exchange** — 30 min each being a thinking double while going through each other's todo lists.
 - **Compare personal agency scaffold setups** — todo system, CRM / relationship-tracking system, blockers & media channels, visual representations for concepts and routine flows, note-taking & memory system.
+- **Brainstorm session** — Nico is open to brainstorming on his current projects, research directions, or any of the open questions above. If a visitor wants one, the representative can take the topic and pass the request along to him.
 
 Ways to reach Nico: write to him wherever you have his contact, email **nicohillbrand@gmail.com**, or book a meeting in his calendar.
