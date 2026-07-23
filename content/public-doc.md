@@ -148,6 +148,14 @@ A sample of questions Nico actively thinks about and finds interesting. Visitors
 
 This is a partial list; the technical areas above map out Nico's broader research directions.
 
+### Ideas I'm considering
+
+Projects and directions Nico finds interesting and is potentially open to working on — not commitments or things he necessarily wants to do, just ideas on his radar that seem worth considering:
+
+- **Building his own scaffolds** for automated alignment research, defensive acceleration, and philosophy / macro-strategy AI reasoning.
+
+(This list will grow; treat these as "interesting to Nico," not "planned.")
+
 ### CS Masters
 
 Do well and learn technical skills for making it easier to find footholds when tackling research problems. This increases the skill-weighted impact-oriented-individuals resource by increasing Nico's skills.
